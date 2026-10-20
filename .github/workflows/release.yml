@@ -20,10 +20,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-      release_tag: ${{ steps.release_version.outputs.release_tag }}
-      version: ${{ steps.release_version.outputs.version }}
-      recover_incomplete: ${{ steps.release_version.outputs.recover_incomplete }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,6 +33,28 @@ jobs:
             echo "Release tags must point to a commit already contained in main." >&2
             exit 1
           fi
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Test
+        run: dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
+
+  reserve:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_tag: ${{ steps.reserve_tag.outputs.release_tag }}
+      version: ${{ steps.reserve_tag.outputs.version }}
+      recover_incomplete: ${{ steps.reserve_tag.outputs.recover_incomplete }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Read and validate release version
         id: release_version
@@ -117,6 +135,19 @@ jobs:
                   version, release_tag = max(matching_tags)
                   recover_incomplete = False
               else:
+                  if tag_versions:
+                      latest_tag = max(tag_versions, key=tag_versions.get)
+                      latest_tag_commit = tag_commits[latest_tag]
+                      if subprocess.run(
+                          ["git", "merge-base", "--is-ancestor",
+                           latest_tag_commit, current_sha],
+                          check=False,
+                      ).returncode != 0:
+                          raise SystemExit(
+                              "This main-branch run is older than or diverges from the "
+                              "latest version tag; refusing to publish stale source."
+                          )
+
                   if published_versions:
                       latest_published_tag = max(
                           published_versions, key=published_versions.get
@@ -176,34 +207,171 @@ jobs:
                       recover_incomplete = False
 
           version_text = ".".join(map(str, version))
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"VERSION={version_text}\nRELEASE_TAG={release_tag}\n")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
               output_file.write(
                   f"version={version_text}\nrelease_tag={release_tag}\n"
                   f"recover_incomplete={str(recover_incomplete).lower()}\n"
               )
-          print(f"Release version: {version_text} ({release_tag})")
+          print(f"Release version candidate: {version_text} ({release_tag})")
           PY
+
+      - name: Reserve release tag
+        id: reserve_tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INITIAL_RELEASE_TAG: ${{ steps.release_version.outputs.release_tag }}
+          INITIAL_VERSION: ${{ steps.release_version.outputs.version }}
+          INITIAL_RECOVER_INCOMPLETE: ${{ steps.release_version.outputs.recover_incomplete }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="${INITIAL_RELEASE_TAG}"
+          VERSION="${INITIAL_VERSION}"
+          RECOVER_INCOMPLETE="${INITIAL_RECOVER_INCOMPLETE}"
+          LOOKUP_ERROR="$(mktemp)"
+
+          get_tag_commit() {
+            local object_json object_type object_sha
+            if ! object_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" 2>"${LOOKUP_ERROR}")"; then
+              if grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
+                printf ''
+                return 0
+              fi
+              cat "${LOOKUP_ERROR}" >&2
+              return 1
+            fi
+            object_type="$(jq -r '.object.type' <<< "${object_json}")"
+            object_sha="$(jq -r '.object.sha' <<< "${object_json}")"
+            while [[ "${object_type}" == "tag" ]]; do
+              object_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")"
+              object_type="$(jq -r '.object.type' <<< "${object_json}")"
+              object_sha="$(jq -r '.object.sha' <<< "${object_json}")"
+            done
+            [[ "${object_type}" == "commit" ]] || {
+              echo "Release tag ${RELEASE_TAG} resolves to unsupported object ${object_type}." >&2
+              return 1
+            }
+            printf '%s' "${object_sha}"
+          }
+
+          bump_version() {
+            VERSION="$(python3 -c '
+          parts = list(map(int, __import__("sys").argv[1].split(".")))
+          for index in range(3, -1, -1):
+              if parts[index] < 65534:
+                  parts[index] += 1
+                  for following in range(index + 1, 4):
+                      parts[following] = 0
+                  break
+          else:
+              raise SystemExit("No valid .NET AssemblyVersion remains.")
+          print(".".join(map(str, parts)))
+          ' "${VERSION}")"
+            RELEASE_TAG="v${VERSION}"
+            RECOVER_INCOMPLETE=false
+          }
+
+          for attempt in {1..20}; do
+            TAG_COMMIT="$(get_tag_commit)"
+            if [[ -n "${TAG_COMMIT}" ]]; then
+              if [[ "${TAG_COMMIT}" == "${GITHUB_SHA}" ]]; then
+                break
+              fi
+              if [[ "${GITHUB_REF_TYPE}" != "tag" && "${RECOVER_INCOMPLETE}" == "true" ]]; then
+                COMPARISON_STATUS="$(gh api \
+                  "repos/${GITHUB_REPOSITORY}/compare/${TAG_COMMIT}...${GITHUB_SHA}" \
+                  --jq '.status')"
+                if RELEASE_JSON="$(gh api \
+                  "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+                  2>"${LOOKUP_ERROR}")"; then
+                  :
+                elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
+                  RELEASE_JSON=""
+                else
+                  cat "${LOOKUP_ERROR}" >&2
+                  exit 1
+                fi
+                if [[ "${COMPARISON_STATUS}" == "ahead" || "${COMPARISON_STATUS}" == "identical" ]]; then
+                  if [[ -n "${RELEASE_JSON}" ]]; then
+                    [[ "$(jq -r '.draft' <<< "${RELEASE_JSON}")" == "true" ]] || {
+                      echo "Cannot retarget published release ${RELEASE_TAG}." >&2
+                      exit 1
+                    }
+                    gh api --method DELETE \
+                      "repos/${GITHUB_REPOSITORY}/releases/$(jq -r '.id' <<< "${RELEASE_JSON}")"
+                  fi
+                  gh api --method DELETE \
+                    "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_TAG}"
+                  TAG_COMMIT=""
+                else
+                  bump_version
+                  continue
+                fi
+              else
+                bump_version
+                continue
+              fi
+            fi
+
+            if [[ -z "${TAG_COMMIT}" ]]; then
+              if gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f "ref=refs/tags/${RELEASE_TAG}" \
+                -f "sha=${GITHUB_SHA}" 2>"${LOOKUP_ERROR}"; then
+                TAG_COMMIT="$(get_tag_commit)"
+                [[ "${TAG_COMMIT}" == "${GITHUB_SHA}" ]] || {
+                  echo "Reserved tag ${RELEASE_TAG} does not point to this build commit." >&2
+                  exit 1
+                }
+                break
+              fi
+
+              TAG_COMMIT="$(get_tag_commit)"
+              if [[ -z "${TAG_COMMIT}" ]]; then
+                cat "${LOOKUP_ERROR}" >&2
+                exit 1
+              fi
+              if [[ "${TAG_COMMIT}" == "${GITHUB_SHA}" ]]; then
+                break
+              fi
+              bump_version
+            fi
+          done
+
+          if [[ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
+            echo "Could not reserve a unique release tag after 20 attempts." >&2
+            exit 1
+          fi
+          rm -f "${LOOKUP_ERROR}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "recover_incomplete=${RECOVER_INCOMPLETE}" >> "${GITHUB_OUTPUT}"
+
+  package:
+    needs: reserve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
-      - name: Test
-        run: dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
-
       - name: Publish
         run: >
           dotnet publish src/Jellyfin.Plugin.ForcePasswordChange/Jellyfin.Plugin.ForcePasswordChange.csproj
           --configuration Release
-          --no-restore
           --output output
-          -p:Version="${VERSION}"
-          -p:AssemblyVersion="${VERSION}"
-          -p:FileVersion="${VERSION}"
+          -p:Version="${{ needs.reserve.outputs.version }}"
+          -p:AssemblyVersion="${{ needs.reserve.outputs.version }}"
+          -p:FileVersion="${{ needs.reserve.outputs.version }}"
 
       - name: Package plugin and repository manifest
+        env:
+          VERSION: ${{ needs.reserve.outputs.version }}
         run: |
           PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
           (cd output && zip -r "../${PACKAGE_NAME}" .)
@@ -215,7 +383,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs:
+      - reserve
+      - package
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -233,118 +403,40 @@ jobs:
       - name: Create GitHub release with plugin package and repository manifest
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
-          VERSION: ${{ needs.build.outputs.version }}
-          RECOVER_INCOMPLETE: ${{ needs.build.outputs.recover_incomplete }}
+          RELEASE_TAG: ${{ needs.reserve.outputs.release_tag }}
+          VERSION: ${{ needs.reserve.outputs.version }}
         run: |
           set -euo pipefail
           PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
           RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
           LOOKUP_ERROR="$(mktemp)"
-          RELEASE_EXISTS=false
-
-          get_tag_commit() {
-            local object_json object_type object_sha
-            if ! object_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" 2>"${LOOKUP_ERROR}")"; then
-              if grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
-                printf ''
-                return 0
-              fi
-              cat "${LOOKUP_ERROR}" >&2
-              return 1
-            fi
-
-            object_type="$(jq -r '.object.type' <<< "${object_json}")"
-            object_sha="$(jq -r '.object.sha' <<< "${object_json}")"
-            while [[ "${object_type}" == "tag" ]]; do
-              object_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")"
-              object_type="$(jq -r '.object.type' <<< "${object_json}")"
-              object_sha="$(jq -r '.object.sha' <<< "${object_json}")"
-            done
-            if [[ "${object_type}" != "commit" ]]; then
-              echo "Release tag ${RELEASE_TAG} resolves to an unsupported Git object: ${object_type}." >&2
-              return 1
-            fi
-            printf '%s' "${object_sha}"
-          }
 
           if RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}" 2>"${LOOKUP_ERROR}")"; then
-            RELEASE_EXISTS=true
+            :
           elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
-            RELEASE_JSON=""
-          else
-            cat "${LOOKUP_ERROR}" >&2
-            exit 1
-          fi
-
-          TAG_COMMIT="$(get_tag_commit)"
-          rm -f "${LOOKUP_ERROR}"
-
-          if [[ -n "${TAG_COMMIT}" && "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
-            if [[ "${GITHUB_REF_TYPE}" == "tag" ]] ||
-               [[ "${RECOVER_INCOMPLETE}" != "true" ]] ||
-               [[ "${RELEASE_EXISTS}" == "true" && "$(jq -r '.draft' <<< "${RELEASE_JSON}")" != "true" ]]; then
-              echo "Release tag ${RELEASE_TAG} points to ${TAG_COMMIT}, not this build's ${GITHUB_SHA}." >&2
-              exit 1
-            fi
-
-            COMPARISON_STATUS="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/compare/${TAG_COMMIT}...${GITHUB_SHA}" \
-              --jq '.status')"
-            if [[ "${COMPARISON_STATUS}" != "ahead" && "${COMPARISON_STATUS}" != "identical" ]]; then
-              echo "Refusing to replace a release tag that is not an ancestor of this main-branch commit." >&2
-              exit 1
-            fi
-
-            if [[ "${RELEASE_EXISTS}" == "true" ]]; then
-              gh api --method DELETE \
-                "repos/${GITHUB_REPOSITORY}/releases/$(jq -r '.id' <<< "${RELEASE_JSON}")"
-            fi
-            gh api --method DELETE \
-              "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_TAG}"
-            RELEASE_EXISTS=false
-            TAG_COMMIT=""
-          fi
-
-          if [[ "${RELEASE_EXISTS}" == "true" && -z "${TAG_COMMIT}" ]]; then
-            if [[ "$(jq -r '.draft' <<< "${RELEASE_JSON}")" != "true" ]]; then
-              echo "Published release ${RELEASE_TAG} has no matching Git tag." >&2
-              exit 1
-            fi
-            gh api --method DELETE \
-              "repos/${GITHUB_REPOSITORY}/releases/$(jq -r '.id' <<< "${RELEASE_JSON}")"
-            RELEASE_EXISTS=false
-          fi
-
-          if [[ "${RELEASE_EXISTS}" == "false" ]]; then
-            if [[ -n "${TAG_COMMIT}" && "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
-              echo "Release tag ${RELEASE_TAG} already exists at a different commit." >&2
-              exit 1
-            fi
-            if [[ -z "${TAG_COMMIT}" ]]; then
-              gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-                -f "ref=refs/tags/${RELEASE_TAG}" \
-                -f "sha=${GITHUB_SHA}"
-              TAG_COMMIT="$(get_tag_commit)"
-              if [[ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
-                echo "Created release tag ${RELEASE_TAG} does not point to this build's ${GITHUB_SHA}." >&2
-                exit 1
-              fi
-            fi
             gh release create "${RELEASE_TAG}" \
               --draft \
               --title "Force Password Change ${VERSION}" \
               --generate-notes
             RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
+          else
+            cat "${LOOKUP_ERROR}" >&2
+            exit 1
           fi
 
           RELEASE_ID="$(jq -r '.id' <<< "${RELEASE_JSON}")"
           IS_DRAFT="$(jq -r '.draft' <<< "${RELEASE_JSON}")"
-          TAG_COMMIT="$(get_tag_commit)"
-          if [[ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
-            echo "Release tag ${RELEASE_TAG} points to ${TAG_COMMIT}, not this build's ${GITHUB_SHA}." >&2
+          TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object | [.type, .sha] | @tsv')"
+          IFS=$'\t' read -r TAG_OBJECT_TYPE TAG_COMMIT <<< "${TAG_OBJECT}"
+          while [[ "${TAG_OBJECT_TYPE}" == "tag" ]]; do
+            TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_COMMIT}" --jq '.object | [.type, .sha] | @tsv')"
+            IFS=$'\t' read -r TAG_OBJECT_TYPE TAG_COMMIT <<< "${TAG_OBJECT}"
+          done
+          if [[ "${TAG_OBJECT_TYPE}" != "commit" || "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
+            echo "Release tag ${RELEASE_TAG} does not resolve to this build's ${GITHUB_SHA}." >&2
             exit 1
           fi
+          rm -f "${LOOKUP_ERROR}"
 
           mkdir -p previous-release published-package retained-packages
           if [[ "${IS_DRAFT}" == "true" ]]; then
