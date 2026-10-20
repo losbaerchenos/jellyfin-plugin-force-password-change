@@ -7,8 +7,10 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
+      - '.github/workflows/release.yml'
     tags:
       - 'v*'
+  workflow_dispatch:
 
 concurrency:
   group: jellyfin-plugin-release-${{ github.ref }}-${{ github.sha }}
