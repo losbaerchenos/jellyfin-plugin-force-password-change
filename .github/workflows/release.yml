@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+concurrency:
+  group: jellyfin-plugin-release
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
@@ -60,26 +64,81 @@ jobs:
           -p:FileVersion="${VERSION}"
 
       - name: Package plugin and repository manifest
+        run: |
+          PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
+          (cd output && zip -r "../${PACKAGE_NAME}" .)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-release-assets
+          path: Jellyfin.Plugin.ForcePasswordChange_*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-release-assets
+          path: .
+
+      - name: Create GitHub release with plugin package and repository manifest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
-          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${PACKAGE_NAME}"
-          TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${GITHUB_REF_NAME#v}.zip"
+          RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}"
+          LOOKUP_ERROR="$(mktemp)"
 
-          (cd output && zip -r "../${PACKAGE_NAME}" .)
-          mkdir release-assets previous-release
+          if RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}" 2>"${LOOKUP_ERROR}")"; then
+            :
+          elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --draft \
+              --title "Force Password Change ${GITHUB_REF_NAME#v}" \
+              --generate-notes
+            RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
+          else
+            cat "${LOOKUP_ERROR}" >&2
+            exit 1
+          fi
 
+          rm -f "${LOOKUP_ERROR}"
+          RELEASE_ID="$(jq -r '.id' <<< "${RELEASE_JSON}")"
+          IS_DRAFT="$(jq -r '.draft' <<< "${RELEASE_JSON}")"
+
+          if [[ "${IS_DRAFT}" != "true" ]]; then
+            jq -e --arg package "${PACKAGE_NAME}" \
+              'any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
+              <<< "${RELEASE_JSON}" > /dev/null || {
+                echo "Published release is missing expected assets; refusing to modify a live release." >&2
+                exit 1
+              }
+            echo "Release is already published with both assets; leaving it unchanged."
+            exit 0
+          fi
+
+          mkdir -p previous-release
+          LATEST_MANIFEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq 'sort_by(.published_at // .created_at) | reverse | [.[] | select(.draft == false and any(.assets[]; .name == "manifest.json")) | .tag_name] | first // empty')"
           MANIFEST_SOURCE="manifest.json"
-          PREVIOUS_MANIFEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq 'sort_by(.published_at // .created_at) | reverse | [.[] | select(any(.assets[]; .name == "manifest.json")) | .tag_name] | first // empty')"
-          if [[ -n "$PREVIOUS_MANIFEST_TAG" ]]; then
-            gh release download "$PREVIOUS_MANIFEST_TAG" --pattern manifest.json --dir previous-release
+          if [[ -n "${LATEST_MANIFEST_TAG}" ]]; then
+            gh release download "${LATEST_MANIFEST_TAG}" --pattern manifest.json --dir previous-release
             MANIFEST_SOURCE="previous-release/manifest.json"
           fi
 
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${PACKAGE_NAME}"
+          TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           jq \
-            --arg version "${VERSION}" \
+            --arg version "${GITHUB_REF_NAME#v}" \
             --arg sourceUrl "${RELEASE_URL}" \
             --arg timestamp "${TIMESTAMP}" \
             '.[0] as $plugin
@@ -97,40 +156,18 @@ jobs:
                       ]
                   )
               ]' \
-            "${MANIFEST_SOURCE}" > release-assets/manifest.json
+            "${MANIFEST_SOURCE}" > manifest.json
 
-          jq -e --arg version "${VERSION}" \
+          jq -e --arg version "${GITHUB_REF_NAME#v}" \
             'type == "array" and length == 1 and
              (.[0].versions | any(.version == $version and
                .targetAbi == "12.0.0.0" and
                (.sourceUrl | startswith("https://github.com/"))))' \
-            release-assets/manifest.json > /dev/null
+            manifest.json > /dev/null
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: plugin-release-assets
-          path: |
-            Jellyfin.Plugin.ForcePasswordChange_*.zip
-            release-assets/manifest.json
-          if-no-files-found: error
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: plugin-release-assets
-          path: .
-
-      - name: Create GitHub release with plugin package and repository manifest
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            "Jellyfin.Plugin.ForcePasswordChange_${GITHUB_REF_NAME#v}.zip" \
-            "release-assets/manifest.json" \
-            --title "Force Password Change ${GITHUB_REF_NAME#v}" \
-            --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" "${PACKAGE_NAME}" manifest.json --clobber
+          RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
+          jq -e --arg package "${PACKAGE_NAME}" \
+            'any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
+            <<< "${RELEASE_JSON}" > /dev/null
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false
