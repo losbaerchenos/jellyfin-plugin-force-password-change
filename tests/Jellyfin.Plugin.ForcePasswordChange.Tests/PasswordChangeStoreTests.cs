@@ -24,8 +24,8 @@ public sealed class PasswordChangeStoreTests
     {
         var html = ReadConfigurationPage("configPage.html");
 
-        Assert.Contains("error.responseJSON", html);
-        Assert.Contains("error.responseText", html);
+        Assert.Contains("error?.responseJSON", html);
+        Assert.Contains("error?.responseText", html);
         Assert.Contains("'HTTP ' + error.status", html);
         Assert.Contains("user list could not be refreshed", html);
         Assert.Contains("'/Plugin/ForcePasswordChange/User/' + encodeURIComponent(userId) + '/' + action", html);
