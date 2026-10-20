@@ -94,6 +94,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${GITHUB_REF_NAME#v}.zip"
           RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}"
           LOOKUP_ERROR="$(mktemp)"
@@ -115,18 +116,22 @@ jobs:
           RELEASE_ID="$(jq -r '.id' <<< "${RELEASE_JSON}")"
           IS_DRAFT="$(jq -r '.draft' <<< "${RELEASE_JSON}")"
 
-          if [[ "${IS_DRAFT}" != "true" ]]; then
+          mkdir -p previous-release published-package retained-packages
+          if [[ "${IS_DRAFT}" == "true" ]]; then
+            PACKAGE_PATH="${PACKAGE_NAME}"
+          else
             jq -e --arg package "${PACKAGE_NAME}" \
-              'any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
+              'any(.assets[]; .name == $package)' \
               <<< "${RELEASE_JSON}" > /dev/null || {
-                echo "Published release is missing expected assets; refusing to modify a live release." >&2
+                echo "Published release is missing ${PACKAGE_NAME}; refusing to modify it." >&2
                 exit 1
               }
-            echo "Release is already published with both assets; leaving it unchanged."
-            exit 0
+            gh release download "${GITHUB_REF_NAME}" \
+              --pattern "${PACKAGE_NAME}" \
+              --dir published-package
+            PACKAGE_PATH="published-package/${PACKAGE_NAME}"
           fi
 
-          mkdir -p previous-release
           LATEST_MANIFEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
             --jq 'sort_by(.published_at // .created_at) | reverse | [.[] | select(.draft == false and any(.assets[]; .name == "manifest.json")) | .tag_name] | first // empty')"
           MANIFEST_SOURCE="manifest.json"
@@ -136,7 +141,7 @@ jobs:
           fi
 
           RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${PACKAGE_NAME}"
-          PACKAGE_CHECKSUM="$(md5sum "${PACKAGE_NAME}" | awk '{print toupper($1)}')"
+          PACKAGE_CHECKSUM="$(md5sum "${PACKAGE_PATH}" | awk '{print toupper($1)}')"
           TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           jq \
             --arg version "${GITHUB_REF_NAME#v}" \
@@ -161,18 +166,54 @@ jobs:
               ]' \
             "${MANIFEST_SOURCE}" > manifest.json
 
+          while IFS=$'\t' read -r RETAINED_VERSION RETAINED_SOURCE_URL; do
+            [[ -n "${RETAINED_VERSION}" ]] || continue
+
+            RELEASE_ASSET_PATH="${RETAINED_SOURCE_URL#*/releases/download/}"
+            if [[ "${RELEASE_ASSET_PATH}" == "${RETAINED_SOURCE_URL}" || "${RELEASE_ASSET_PATH}" != */* ]]; then
+              echo "Cannot derive a GitHub release asset from ${RETAINED_SOURCE_URL} for version ${RETAINED_VERSION}." >&2
+              exit 1
+            fi
+            RETAINED_TAG="${RELEASE_ASSET_PATH%%/*}"
+            RETAINED_PACKAGE="${RELEASE_ASSET_PATH#*/}"
+            if [[ "${RETAINED_PACKAGE}" == */* || -z "${RETAINED_TAG}" || -z "${RETAINED_PACKAGE}" ]]; then
+              echo "Invalid plugin package URL for retained version ${RETAINED_VERSION}: ${RETAINED_SOURCE_URL}" >&2
+              exit 1
+            fi
+
+            RETAINED_DIR="retained-packages/${RETAINED_VERSION}"
+            mkdir -p "${RETAINED_DIR}"
+            gh release download "${RETAINED_TAG}" \
+              --pattern "${RETAINED_PACKAGE}" \
+              --dir "${RETAINED_DIR}"
+            RETAINED_CHECKSUM="$(md5sum "${RETAINED_DIR}/${RETAINED_PACKAGE}" | awk '{print toupper($1)}')"
+            jq \
+              --arg version "${RETAINED_VERSION}" \
+              --arg checksum "${RETAINED_CHECKSUM}" \
+              '.[0].versions |= map(if .version == $version then .checksum = $checksum else . end)' \
+              manifest.json > manifest.tmp
+            mv manifest.tmp manifest.json
+          done < <(jq -r '.[0].versions[] | select((.checksum // "") == "") | [.version, .sourceUrl] | @tsv' manifest.json)
+
           jq -e --arg version "${GITHUB_REF_NAME#v}" \
             --arg checksum "${PACKAGE_CHECKSUM}" \
             'type == "array" and length == 1 and
+             (.[0].versions | all(.[]; (.checksum | type == "string" and
+               length == 32 and test("^[A-F0-9]{32}$")))) and
              (.[0].versions | any(.version == $version and
-               .targetAbi == "12.0.0.0" and
-               .checksum == $checksum and
+               .targetAbi == "12.0.0.0" and .checksum == $checksum and
                (.sourceUrl | startswith("https://github.com/"))))' \
             manifest.json > /dev/null
 
-          gh release upload "${GITHUB_REF_NAME}" "${PACKAGE_NAME}" manifest.json --clobber
+          if [[ "${IS_DRAFT}" == "true" ]]; then
+            gh release upload "${GITHUB_REF_NAME}" "${PACKAGE_NAME}" manifest.json --clobber
+          else
+            gh release upload "${GITHUB_REF_NAME}" manifest.json --clobber
+          fi
           RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
-          jq -e --arg package "${PACKAGE_NAME}" \
-            'any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
+          jq -e --arg package "${PACKAGE_NAME}" --argjson draft "${IS_DRAFT}" \
+            '(.draft == $draft) and any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
             <<< "${RELEASE_JSON}" > /dev/null
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false
+          if [[ "${IS_DRAFT}" == "true" ]]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false
+          fi
