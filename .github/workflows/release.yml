@@ -11,7 +11,7 @@ on:
       - 'v*'
 
 concurrency:
-  group: jellyfin-plugin-release
+  group: jellyfin-plugin-release-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
@@ -23,6 +23,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.release_version.outputs.release_tag }}
       version: ${{ steps.release_version.outputs.version }}
+      recover_incomplete: ${{ steps.release_version.outputs.recover_incomplete }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,14 +40,17 @@ jobs:
 
       - name: Read and validate release version
         id: release_version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
+          import json
           import os
           import re
           import subprocess
 
           max_component = 65534
-          pattern = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$")
+          pattern = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
           def parse_tag(tag):
               match = pattern.fullmatch(tag)
@@ -55,30 +59,107 @@ jobs:
               version = tuple(map(int, match.groups()))
               return version if all(0 <= part <= max_component for part in version) else None
 
+          tags = subprocess.check_output(
+              ["git", "tag", "--list", "v*"], text=True
+          ).splitlines()
+          tag_versions = {tag: parse_tag(tag) for tag in tags}
+          tag_versions = {tag: version for tag, version in tag_versions.items() if version is not None}
+          tag_commits = {
+              tag: subprocess.check_output(
+                  ["git", "rev-list", "-n", "1", tag], text=True
+              ).strip()
+              for tag in tag_versions
+          }
+          release_pages = json.loads(subprocess.check_output(
+              ["gh", "api", "--paginate", "--slurp",
+               f"repos/{os.environ['GITHUB_REPOSITORY']}/releases?per_page=100"],
+              text=True,
+          ))
+          releases = [release for page in release_pages for release in page]
+          published_tags = {
+              release["tag_name"]
+              for release in releases
+              if not release["draft"] and parse_tag(release["tag_name"]) is not None
+          }
+          published_versions = {
+              tag: tag_versions[tag]
+              for tag in published_tags
+              if tag in tag_versions
+          }
+          latest_published_version = max(published_versions.values(), default=None)
+
           if os.environ["GITHUB_REF_TYPE"] == "tag":
               release_tag = os.environ["GITHUB_REF_NAME"]
+              recover_incomplete = False
               version = parse_tag(release_tag)
               if version is None:
-                  raise SystemExit("Tag must use vMAJOR.MINOR.PATCH.REVISION, with each component between 0 and 65534.")
+                  raise SystemExit(
+                      "Tag must use canonical vMAJOR.MINOR.PATCH.REVISION components "
+                      "(no leading zeroes), each between 0 and 65534."
+                  )
+              newer_tags = [
+                  tag_version
+                  for tag, tag_version in tag_versions.items()
+                  if tag != release_tag
+              ]
+              if newer_tags and version <= max(newer_tags):
+                  raise SystemExit(
+                      "A manual release tag must be newer than every existing canonical version tag."
+                  )
           else:
-              tags = subprocess.check_output(
-                  ["git", "tag", "--list", "v*"], text=True
-              ).splitlines()
-              versions = [(parse_tag(tag), tag) for tag in tags]
-              versions = [(version, tag) for version, tag in versions if version is not None]
-              if not versions:
-                  version = (1, 0, 0, 0)
-                  release_tag = "v1.0.0.0"
+              current_sha = os.environ["GITHUB_SHA"]
+              matching_tags = [
+                  (version, tag)
+                  for tag, version in tag_versions.items()
+                  if tag_commits[tag] == current_sha
+              ]
+              if matching_tags:
+                  version, release_tag = max(matching_tags)
+                  recover_incomplete = False
               else:
-                  latest_version, latest_tag = max(versions)
-                  latest_tag_commit = subprocess.check_output(
-                      ["git", "rev-list", "-n", "1", latest_tag], text=True
-                  ).strip()
+                  if published_versions:
+                      latest_published_tag = max(
+                          published_versions, key=published_versions.get
+                      )
+                      latest_published_commit = tag_commits[latest_published_tag]
+                      is_ancestor = subprocess.run(
+                          ["git", "merge-base", "--is-ancestor",
+                           latest_published_commit, current_sha],
+                          check=False,
+                      ).returncode == 0
+                      if not is_ancestor:
+                          raise SystemExit(
+                              "This main-branch run is older than or diverges from the "
+                              "latest published release; refusing to publish stale source."
+                          )
 
-                  if latest_tag_commit == os.environ["GITHUB_SHA"]:
-                      version = latest_version
-                      release_tag = latest_tag
+                  pending_versions = []
+                  release_by_tag = {release["tag_name"]: release for release in releases}
+                  for tag, candidate_version in tag_versions.items():
+                      if (tag in published_tags or
+                              (latest_published_version is not None and
+                               candidate_version <= latest_published_version)):
+                          continue
+                      candidate_commit = tag_commits[tag]
+                      if subprocess.run(
+                          ["git", "merge-base", "--is-ancestor",
+                           candidate_commit, current_sha],
+                          check=False,
+                      ).returncode != 0:
+                          continue
+                      release = release_by_tag.get(tag)
+                      if release is None or release["draft"]:
+                          pending_versions.append((candidate_version, tag))
+
+                  if pending_versions:
+                      version, release_tag = min(pending_versions)
+                      recover_incomplete = True
+                  elif not tag_versions:
+                      version = (1, 0, 0, 0)
+                      release_tag = "v1.0.0.0"
+                      recover_incomplete = False
                   else:
+                      latest_version = max(tag_versions.values())
                       parts = list(latest_version)
                       for index in range(3, -1, -1):
                           if parts[index] < max_component:
@@ -87,15 +168,21 @@ jobs:
                                   parts[following] = 0
                               break
                       else:
-                          raise SystemExit("No valid .NET AssemblyVersion remains for an automatic release.")
+                          raise SystemExit(
+                              "No valid .NET AssemblyVersion remains for an automatic release."
+                          )
                       version = tuple(parts)
                       release_tag = "v" + ".".join(map(str, version))
+                      recover_incomplete = False
 
           version_text = ".".join(map(str, version))
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
               env_file.write(f"VERSION={version_text}\nRELEASE_TAG={release_tag}\n")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
-              output_file.write(f"version={version_text}\nrelease_tag={release_tag}\n")
+              output_file.write(
+                  f"version={version_text}\nrelease_tag={release_tag}\n"
+                  f"recover_incomplete={str(recover_incomplete).lower()}\n"
+              )
           print(f"Release version: {version_text} ({release_tag})")
           PY
 
@@ -148,29 +235,89 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
           VERSION: ${{ needs.build.outputs.version }}
+          RECOVER_INCOMPLETE: ${{ needs.build.outputs.recover_incomplete }}
         run: |
           set -euo pipefail
           PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
           RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
           LOOKUP_ERROR="$(mktemp)"
+          RELEASE_EXISTS=false
 
           if RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}" 2>"${LOOKUP_ERROR}")"; then
+            RELEASE_EXISTS=true
+          elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
+            RELEASE_JSON=""
+          else
+            cat "${LOOKUP_ERROR}" >&2
+            exit 1
+          fi
+
+          if TAG_COMMIT="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq '.sha' 2>"${LOOKUP_ERROR}")"; then
             :
           elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
+            TAG_COMMIT=""
+          else
+            cat "${LOOKUP_ERROR}" >&2
+            exit 1
+          fi
+          rm -f "${LOOKUP_ERROR}"
+
+          if [[ -n "${TAG_COMMIT}" && "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]] ||
+               [[ "${RECOVER_INCOMPLETE}" != "true" ]] ||
+               [[ "${RELEASE_EXISTS}" == "true" && "$(jq -r '.draft' <<< "${RELEASE_JSON}")" != "true" ]]; then
+              echo "Release tag ${RELEASE_TAG} points to ${TAG_COMMIT}, not this build's ${GITHUB_SHA}." >&2
+              exit 1
+            fi
+
+            COMPARISON_STATUS="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/compare/${TAG_COMMIT}...${GITHUB_SHA}" \
+              --jq '.status')"
+            if [[ "${COMPARISON_STATUS}" != "ahead" && "${COMPARISON_STATUS}" != "identical" ]]; then
+              echo "Refusing to replace a release tag that is not an ancestor of this main-branch commit." >&2
+              exit 1
+            fi
+
+            if [[ "${RELEASE_EXISTS}" == "true" ]]; then
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/releases/$(jq -r '.id' <<< "${RELEASE_JSON}")"
+            fi
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_TAG}"
+            RELEASE_EXISTS=false
+            TAG_COMMIT=""
+          fi
+
+          if [[ "${RELEASE_EXISTS}" == "true" && -z "${TAG_COMMIT}" ]]; then
+            if [[ "$(jq -r '.draft' <<< "${RELEASE_JSON}")" != "true" ]]; then
+              echo "Published release ${RELEASE_TAG} has no matching Git tag." >&2
+              exit 1
+            fi
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/releases/$(jq -r '.id' <<< "${RELEASE_JSON}")"
+            RELEASE_EXISTS=false
+          fi
+
+          if [[ "${RELEASE_EXISTS}" == "false" ]]; then
+            if [[ -n "${TAG_COMMIT}" && "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
+              echo "Release tag ${RELEASE_TAG} already exists at a different commit." >&2
+              exit 1
+            fi
             gh release create "${RELEASE_TAG}" \
               --draft \
               --title "Force Password Change ${VERSION}" \
               --target "${GITHUB_SHA}" \
               --generate-notes
             RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
-          else
-            cat "${LOOKUP_ERROR}" >&2
-            exit 1
           fi
 
-          rm -f "${LOOKUP_ERROR}"
           RELEASE_ID="$(jq -r '.id' <<< "${RELEASE_JSON}")"
           IS_DRAFT="$(jq -r '.draft' <<< "${RELEASE_JSON}")"
+          TAG_COMMIT="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq '.sha')"
+          if [[ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
+            echo "Release tag ${RELEASE_TAG} points to ${TAG_COMMIT}, not this build's ${GITHUB_SHA}." >&2
+            exit 1
+          fi
 
           mkdir -p previous-release published-package retained-packages
           if [[ "${IS_DRAFT}" == "true" ]]; then
