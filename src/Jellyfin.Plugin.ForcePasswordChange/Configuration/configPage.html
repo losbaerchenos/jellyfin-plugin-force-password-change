@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>Force Password Change</title>
+</head>
+<body>
+  <div data-role="page" class="page type-interior pluginConfigurationPage">
+    <div class="content-primary">
+      <h2>Force Password Change</h2>
+
+      <form id="forcePasswordChangeForm">
+        <div class="inputContainer">
+          <label for="userId">Benutzer-ID</label>
+          <input id="userId" type="text" required />
+        </div>
+
+        <button is="emby-button" type="submit" class="raised button-submit">
+          Passwortwechsel erzwingen
+        </button>
+      </form>
+
+      <div id="result"></div>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('forcePasswordChangeForm')
+      .addEventListener('submit', async function (event) {
+        event.preventDefault();
+
+        const userId = document.getElementById('userId').value.trim();
+        const result = document.getElementById('result');
+
+        const response = await fetch(
+          `/Plugin/ForcePasswordChange/User/${userId}/Require`,
+          { method: 'POST' }
+        );
+
+        result.textContent = response.ok
+          ? 'Passwortwechsel wird beim nächsten Login erzwungen.'
+          : 'Fehler: ' + response.status;
+      });
+  </script>
+</body>
+</html>
