@@ -8,7 +8,7 @@ Ein Plugin, mit dem Administratoren für einzelne lokale Jellyfin-Konten einen P
 
 - Ausschließlich für Jellyfin Server **12.x** vorgesehen.
 - Gegen Jellyfin API **12.2.0** gebaut; die Manifest-ABI ist `12.0.0.0`.
-- Nicht mit Jellyfin 10.x oder 11.x verwenden.
+- Nicht mit Jellyfin 10.x verwenden.
 - Das Repository ist für private Tests gedacht. Es gibt noch keine öffentliche Plugin-Version und keine Plugin-Repository-URL.
 
 ### Funktionen im Überblick
