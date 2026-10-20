@@ -436,6 +436,9 @@ jobs:
     needs:
       - reserve
       - package
+    concurrency:
+      group: jellyfin-plugin-release-${{ needs.reserve.outputs.release_tag }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -459,8 +462,34 @@ jobs:
         run: |
           set -euo pipefail
           PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
-          RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
           LOOKUP_ERROR="$(mktemp)"
+
+          find_release() {
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
+              jq -c --arg tag "${RELEASE_TAG}" \
+                '[.[][] | select(.tag_name == $tag)] | sort_by(.draft | not) | .[0] // empty'
+          }
+
+          upload_release_asset() {
+            local asset_path="$1"
+            local asset_name="${asset_path##*/}"
+            local release_json asset_id
+
+            release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+            asset_id="$(jq -r --arg name "${asset_name}" \
+              '.assets[] | select(.name == $name) | .id' \
+              <<< "${release_json}" | head -n 1)"
+            if [[ -n "${asset_id}" ]]; then
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > /dev/null
+            fi
+
+            gh api --method POST \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=${asset_name}" \
+              --header "Content-Type: application/octet-stream" \
+              --input "${asset_path}" > /dev/null
+          }
 
           ensure_current_main_tip() {
             if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
@@ -476,19 +505,28 @@ jobs:
           }
           ensure_current_main_tip
 
-          if RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}" 2>"${LOOKUP_ERROR}")"; then
-            :
-          elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
-            gh release create "${RELEASE_TAG}" \
-              --draft \
-              --title "Force Password Change ${VERSION}" \
-              --generate-notes
-            RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
-          else
-            cat "${LOOKUP_ERROR}" >&2
-            exit 1
+          RELEASE_JSON="$(find_release)"
+          if [[ -z "${RELEASE_JSON}" ]]; then
+            if ! RELEASE_JSON="$(gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases" \
+              -f "tag_name=${RELEASE_TAG}" \
+              -f "target_commitish=${GITHUB_SHA}" \
+              -f "name=Force Password Change ${VERSION}" \
+              -F draft=true \
+              -F generate_release_notes=true \
+              2>"${LOOKUP_ERROR}")"; then
+              RELEASE_JSON="$(find_release)"
+              if [[ -z "${RELEASE_JSON}" ]]; then
+                cat "${LOOKUP_ERROR}" >&2
+                exit 1
+              fi
+            fi
           fi
 
+          [[ "$(jq -r '.tag_name' <<< "${RELEASE_JSON}")" == "${RELEASE_TAG}" ]] || {
+            echo "GitHub returned a release for an unexpected tag." >&2
+            exit 1
+          }
           RELEASE_ID="$(jq -r '.id' <<< "${RELEASE_JSON}")"
           IS_DRAFT="$(jq -r '.draft' <<< "${RELEASE_JSON}")"
           TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object | [.type, .sha] | @tsv')"
@@ -599,15 +637,20 @@ jobs:
 
           ensure_current_main_tip
           if [[ "${IS_DRAFT}" == "true" || "${PACKAGE_UPLOAD_REQUIRED}" == "true" ]]; then
-            gh release upload "${RELEASE_TAG}" "${PACKAGE_NAME}" manifest.json --clobber
+            upload_release_asset "${PACKAGE_NAME}"
+            upload_release_asset manifest.json
           else
-            gh release upload "${RELEASE_TAG}" manifest.json --clobber
+            upload_release_asset manifest.json
           fi
-          RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
-          jq -e --arg package "${PACKAGE_NAME}" --argjson draft "${IS_DRAFT}" \
-            '(.draft == $draft) and any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          jq -e --arg package "${PACKAGE_NAME}" \
+            'any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
             <<< "${RELEASE_JSON}" > /dev/null
-          if [[ "${IS_DRAFT}" == "true" ]]; then
+          if [[ "$(jq -r '.draft' <<< "${RELEASE_JSON}")" == "true" ]]; then
             ensure_current_main_tip
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false
           fi
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          jq -e --arg package "${PACKAGE_NAME}" \
+            '(.draft == false) and any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
+            <<< "${RELEASE_JSON}" > /dev/null
