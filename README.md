@@ -59,6 +59,7 @@ Das Repository muss öffentlich sein, damit Jellyfin Manifest und ZIP ohne GitHu
 4. Starte Jellyfin neu, falls dazu aufgefordert, und prüfe die Installation unter **Dashboard → Plugins → My Plugins**.
 
 Das Manifest und das Plugin-ZIP werden automatisch für jedes Release erzeugt. Die Repository-URL bleibt bei Updates gleich; nach Veröffentlichung eines neuen Releases den Plugin-Katalog in Jellyfin aktualisieren.
+Bereits veröffentlichte Plugin-Versionen bleiben im Manifest erhalten und können daher weiterhin im Katalog für Neuinstallationen oder Rollbacks ausgewählt werden.
 
 #### Releases veröffentlichen
 
@@ -211,6 +212,7 @@ The GitHub repository must be public so Jellyfin can download the manifest and Z
 4. Restart Jellyfin if prompted, then verify the installation under **Dashboard → Plugins → My Plugins**.
 
 The release workflow automatically generates the manifest and plugin ZIP for each release. The repository URL stays the same; refresh the plugin catalog in Jellyfin after a new release is published.
+Previously released plugin versions remain in the manifest and stay available in the catalog for new installations or rollbacks.
 
 #### Publishing a release
 
