@@ -28,6 +28,24 @@ public sealed class PasswordChangeStoreTests
     }
 
     [Fact]
+    public void ConfigurationPageDisplaysHttpErrorDetails()
+    {
+        var pluginAssembly = Assembly.LoadFrom(
+            Path.Combine(AppContext.BaseDirectory, "Jellyfin.Plugin.ForcePasswordChange.dll"));
+        using var page = pluginAssembly.GetManifestResourceStream(
+            "Jellyfin.Plugin.ForcePasswordChange.Configuration.configPage.html");
+
+        Assert.NotNull(page);
+        using var reader = new StreamReader(page!);
+        var html = reader.ReadToEnd();
+
+        Assert.Contains("error.responseJSON", html);
+        Assert.Contains("error.responseText", html);
+        Assert.Contains("HTTP ${error.status}", html);
+        Assert.Contains("user list could not be refreshed", html);
+    }
+
+    [Fact]
     public void RequiredUsersSurviveStoreRestart()
     {
         using var testDirectory = new TemporaryDirectory();

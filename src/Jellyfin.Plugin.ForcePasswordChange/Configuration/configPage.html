@@ -57,8 +57,31 @@
         const result = document.querySelector('#result');
         let usersRequiringChange = new Set();
 
+        function getErrorMessage(error) {
+          let message = typeof error === 'string' ? error : error?.message;
+          const response = error?.responseJSON;
+
+          if (response && typeof response === 'object') {
+            message = response.error || response.message || response.detail || response.title || response.Message || message;
+          } else if (typeof error?.responseText === 'string' && error.responseText.trim()) {
+            try {
+              const responseText = JSON.parse(error.responseText);
+              message = responseText.error || responseText.message || responseText.detail || responseText.title || responseText.Message || error.responseText;
+            } catch {
+              message = error.responseText.trim().slice(0, 400);
+            }
+          }
+
+          const status = error?.status
+            ? `HTTP ${error.status}${error.statusText ? ` (${error.statusText})` : ''}`
+            : '';
+          const detail = message ? String(message) : '';
+          return [status, detail].filter(Boolean).join(': ') || 'Unbekannter Fehler. Weitere Details stehen in der Browser-Konsole.';
+        }
+
         function showError(error) {
-          result.textContent = `Fehler: ${error.message || error}`;
+          console.error('Force Password Change request failed', error);
+          result.textContent = `Fehler: ${getErrorMessage(error)}`;
         }
 
         async function refreshUsers() {
@@ -128,6 +151,7 @@
 
           const isRequired = usersRequiringChange.has(userId.toLowerCase());
           const action = isRequired ? 'Clear' : 'Require';
+          toggleButton.disabled = true;
           try {
             await ApiClient.ajax({
               url: ApiClient.getUrl(`/Plugin/ForcePasswordChange/User/${encodeURIComponent(userId)}/${action}`),
@@ -136,9 +160,22 @@
             result.textContent = isRequired
               ? 'Die Anforderung wurde aufgehoben.'
               : 'Der Passwortwechsel wurde angefordert.';
-            await refreshUsers();
+            if (isRequired) {
+              usersRequiringChange.delete(userId.toLowerCase());
+            } else {
+              usersRequiringChange.add(userId.toLowerCase());
+            }
+            updateToggleButton();
+            try {
+              await refreshUsers();
+            } catch (error) {
+              console.error('Force Password Change succeeded, but the user list could not be refreshed', error);
+              result.textContent += ` Die Benutzerliste konnte nicht aktualisiert werden: ${getErrorMessage(error)}`;
+            }
           } catch (error) {
             showError(error);
+          } finally {
+            toggleButton.disabled = false;
           }
         });
       })();
