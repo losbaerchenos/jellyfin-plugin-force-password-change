@@ -1,6 +1,7 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
-using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Session;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -34,11 +35,11 @@ public class SessionEventHandler : IHostedService
         return Task.CompletedTask;
     }
 
-    private async Task OnSessionStarted(object? sender, SessionEventArgs e)
+    private async void OnSessionStarted(object? sender, SessionEventArgs e)
     {
         try
         {
-            await _manager.HandleSessionStartedAsync(sender, e);
+            await _manager.HandleSessionStartedAsync(sender, e).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

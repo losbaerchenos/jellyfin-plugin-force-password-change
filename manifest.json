@@ -3,15 +3,15 @@
     "category": "General",
     "guid": "6f4c70b2-93a1-4c37-9d0f-52b7d0a1c911",
     "name": "Force Password Change",
-    "description": "Ermöglicht Administratoren, Benutzer beim nächsten Login zum Ändern ihres Passworts aufzufordern.",
-    "owner": "dein-github-name",
+    "description": "Ermöglicht Administratoren, für Benutzer einen Passwortwechsel zu verlangen.",
+    "owner": "losbaerchenos",
     "overview": "Erzwungener Passwortwechsel für Jellyfin-Benutzer",
     "versions": [
       {
         "version": "1.0.0.0",
         "changelog": "Erste Version: Passwortwechsel pro Benutzer anfordern.",
-        "targetAbi": "10.10.0.0",
-        "sourceUrl": "https://github.com/dein-github-name/jellyfin-plugin-force-password-change",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/losbaerchenos/jellyfin-plugin-force-password-change",
         "timestamp": "2026-10-20T00:00:00Z"
       }
     ]

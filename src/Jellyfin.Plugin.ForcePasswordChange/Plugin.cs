@@ -1,33 +1,26 @@
 using System;
 using System.Collections.Generic;
-using MediaBrowser.Common;
 using MediaBrowser.Common.Plugins;
-using MediaBrowser.Controller;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Model.Plugins;
-using Microsoft.Extensions.DependencyInjection;
+using MediaBrowser.Model.Serialization;
 
 namespace Jellyfin.Plugin.ForcePasswordChange;
 
 public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
-    public Plugin(
-        IApplicationPaths applicationPaths,
-        IXmlSerializer xmlSerializer,
-        IServerApplicationHost applicationHost)
+    public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer)
         : base(applicationPaths, xmlSerializer)
     {
         Instance = this;
-        ApplicationHost = applicationHost;
     }
 
     public static Plugin? Instance { get; private set; }
 
-    public IServerApplicationHost ApplicationHost { get; }
-
     public override string Name => "Force Password Change";
 
     public override string Description =>
-        "Ermöglicht Administratoren, Benutzer zu zwingen, beim nächsten Login ein neues Passwort zu setzen.";
+        "Ermöglicht Administratoren, für Benutzer einen Passwortwechsel zu verlangen.";
 
     public override Guid Id => new("6f4c70b2-93a1-4c37-9d0f-52b7d0a1c911");
 
@@ -35,7 +28,7 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         yield return new PluginPageInfo
         {
-            Name = "ForcePasswordChange",
+            Name = Name,
             EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html"
         };
     }

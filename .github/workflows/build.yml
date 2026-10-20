@@ -1,9 +1,14 @@
-name: Build
+name: Build and test
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,18 +18,20 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Restore
-        run: dotnet restore src/Jellyfin.Plugin.ForcePasswordChange
+        run: |
+          dotnet restore src/Jellyfin.Plugin.ForcePasswordChange/Jellyfin.Plugin.ForcePasswordChange.csproj
+          dotnet restore tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj
 
-      - name: Build
-        run: dotnet build src/Jellyfin.Plugin.ForcePasswordChange -c Release --no-restore
+      - name: Test
+        run: dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release --no-restore
 
       - name: Publish
-        run: dotnet publish src/Jellyfin.Plugin.ForcePasswordChange -c Release -o output
+        run: dotnet publish src/Jellyfin.Plugin.ForcePasswordChange/Jellyfin.Plugin.ForcePasswordChange.csproj --configuration Release --no-restore --output output
 
       - uses: actions/upload-artifact@v4
         with:
-          name: plugin
+          name: jellyfin-plugin-force-password-change
           path: output/

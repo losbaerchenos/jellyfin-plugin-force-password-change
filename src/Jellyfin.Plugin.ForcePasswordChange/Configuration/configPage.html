@@ -1,46 +1,148 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="utf-8" />
   <title>Force Password Change</title>
 </head>
 <body>
-  <div data-role="page" class="page type-interior pluginConfigurationPage">
-    <div class="content-primary">
-      <h2>Force Password Change</h2>
+  <div id="ForcePasswordChangePage" data-role="page" class="page type-interior pluginConfigurationPage">
+    <div data-role="content">
+      <div class="content-primary">
+        <h2>Force Password Change</h2>
+        <form id="settingsForm">
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label class="emby-checkbox-label">
+              <input id="blockSessions" type="checkbox" is="emby-checkbox" />
+              <span>Anmeldesitzungen blockieren, bis das Passwort geändert wurde (nur mit passendem Client-Workflow)</span>
+            </label>
+            <div class="fieldDescription">Für die integrierte Passwortwechsel-Seite muss diese Option ausgeschaltet sein. Aktivieren Sie sie nur, wenn Ihre Client-Anwendung einen eigenen Ablauf unterstützt.</div>
+          </div>
+          <div class="inputContainer">
+            <label class="inputLabel" for="minimumPasswordLength">Mindestlänge des neuen Passworts</label>
+            <input id="minimumPasswordLength" type="number" min="8" max="128" required is="emby-input" />
+          </div>
+          <button is="emby-button" type="submit" class="raised button-submit">
+            <span>Einstellungen speichern</span>
+          </button>
+        </form>
 
-      <form id="forcePasswordChangeForm">
-        <div class="inputContainer">
-          <label for="userId">Benutzer-ID</label>
-          <input id="userId" type="text" required />
+        <p>
+          Seite zum selbstständigen Passwortwechsel:
+          <a id="passwordChangePageLink" href="#" target="_blank" rel="noopener noreferrer">
+            Passwortwechsel-Seite öffnen
+          </a>
+          <br />
+          Sie können diesen Link an Benutzer weitergeben, die ihr Passwort ändern müssen.
+        </p>
+
+        <h3>Benutzer</h3>
+        <div class="selectContainer">
+          <label class="selectLabel" for="userId">Benutzer auswählen</label>
+          <select id="userId" is="emby-select"></select>
         </div>
-
-        <button is="emby-button" type="submit" class="raised button-submit">
-          Passwortwechsel erzwingen
+        <button id="toggleRequirement" is="emby-button" type="button" class="raised">
+          <span>Passwortwechsel verlangen</span>
         </button>
-      </form>
-
-      <div id="result"></div>
+        <div id="result" role="status" aria-live="polite"></div>
+      </div>
     </div>
+
+    <script>
+      (() => {
+        const pluginId = '6f4c70b2-93a1-4c37-9d0f-52b7d0a1c911';
+        const page = document.querySelector('#ForcePasswordChangePage');
+        const form = document.querySelector('#settingsForm');
+        const userSelect = document.querySelector('#userId');
+        const toggleButton = document.querySelector('#toggleRequirement');
+        const result = document.querySelector('#result');
+        let usersRequiringChange = new Set();
+
+        function showError(error) {
+          result.textContent = `Fehler: ${error.message || error}`;
+        }
+
+        async function refreshUsers() {
+          const [users, requiredIds] = await Promise.all([
+            ApiClient.getUsers(),
+            ApiClient.ajax({
+              url: ApiClient.getUrl('/Plugin/ForcePasswordChange/RequiredUsers'),
+              type: 'GET',
+              dataType: 'json'
+            })
+          ]);
+
+          usersRequiringChange = new Set(requiredIds.map(id => String(id).toLowerCase()));
+          userSelect.replaceChildren();
+
+          for (const user of users) {
+            const option = document.createElement('option');
+            option.value = user.Id;
+            option.textContent = user.Name;
+            userSelect.append(option);
+          }
+
+          updateToggleButton();
+        }
+
+        function updateToggleButton() {
+          const required = usersRequiringChange.has(userSelect.value.toLowerCase());
+          toggleButton.querySelector('span').textContent = required
+            ? 'Passwortwechsel aufheben'
+            : 'Passwortwechsel verlangen';
+        }
+
+        page.addEventListener('pageshow', async () => {
+          try {
+            const passwordChangePageLink = document.querySelector('#passwordChangePageLink');
+            passwordChangePageLink.href = ApiClient.getUrl('/Plugin/ForcePasswordChange/PasswordChangePage');
+            const config = await ApiClient.getPluginConfiguration(pluginId);
+            document.querySelector('#blockSessions').checked = config.BlockSessionsUntilChanged;
+            document.querySelector('#minimumPasswordLength').value = config.MinimumPasswordLength;
+            await refreshUsers();
+          } catch (error) {
+            showError(error);
+          }
+        });
+
+        form.addEventListener('submit', async event => {
+          event.preventDefault();
+          try {
+            const config = await ApiClient.getPluginConfiguration(pluginId);
+            config.BlockSessionsUntilChanged = document.querySelector('#blockSessions').checked;
+            config.MinimumPasswordLength = Number(document.querySelector('#minimumPasswordLength').value);
+            const response = await ApiClient.updatePluginConfiguration(pluginId, config);
+            Dashboard.processPluginConfigurationUpdateResult(response);
+          } catch (error) {
+            showError(error);
+          }
+        });
+
+        userSelect.addEventListener('change', updateToggleButton);
+
+        toggleButton.addEventListener('click', async () => {
+          const userId = userSelect.value;
+          if (!userId) {
+            result.textContent = 'Bitte zuerst einen Benutzer auswählen.';
+            return;
+          }
+
+          const isRequired = usersRequiringChange.has(userId.toLowerCase());
+          const action = isRequired ? 'Clear' : 'Require';
+          try {
+            await ApiClient.ajax({
+              url: ApiClient.getUrl(`/Plugin/ForcePasswordChange/User/${encodeURIComponent(userId)}/${action}`),
+              type: 'POST'
+            });
+            result.textContent = isRequired
+              ? 'Die Anforderung wurde aufgehoben.'
+              : 'Der Passwortwechsel wurde angefordert.';
+            await refreshUsers();
+          } catch (error) {
+            showError(error);
+          }
+        });
+      })();
+    </script>
   </div>
-
-  <script>
-    document.getElementById('forcePasswordChangeForm')
-      .addEventListener('submit', async function (event) {
-        event.preventDefault();
-
-        const userId = document.getElementById('userId').value.trim();
-        const result = document.getElementById('result');
-
-        const response = await fetch(
-          `/Plugin/ForcePasswordChange/User/${userId}/Require`,
-          { method: 'POST' }
-        );
-
-        result.textContent = response.ok
-          ? 'Passwortwechsel wird beim nächsten Login erzwungen.'
-          : 'Fehler: ' + response.status;
-      });
-  </script>
 </body>
 </html>
