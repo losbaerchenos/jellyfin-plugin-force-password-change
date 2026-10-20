@@ -8,7 +8,7 @@ Ein Plugin, mit dem Administratoren für einzelne lokale Jellyfin-Konten einen P
 
 - Ausschließlich für Jellyfin Server **12.x** vorgesehen.
 - Gegen Jellyfin API **12.2.0** gebaut; die Manifest-ABI ist `12.0.0.0`.
-- Nicht mit Jellyfin 10.x oder 11.x verwenden.
+- Nur Jellyfin Server 12.x wird unterstützt.
 - Für die Installation über den Jellyfin-Katalog muss dieses GitHub-Repository öffentlich sein. Solange es privat ist, können nur Personen mit GitHub-Zugriff das Plugin herunterladen.
 
 ### Funktionen im Überblick
@@ -63,7 +63,7 @@ Bereits veröffentlichte Plugin-Versionen bleiben im Manifest erhalten und könn
 
 #### Releases veröffentlichen
 
-Änderungen vor dem Merge auf einer privaten Jellyfin-12.x-Instanz testen und anschließend nach `main` mergen. Bei Änderungen an `src/` oder `tests/` startet der Workflow automatisch: Er führt die Tests aus, erhöht die vierteilige Plugin-Version, erstellt den passenden Tag und veröffentlicht ZIP sowie Manifest als GitHub-Release. Automatische Releases setzen die höchste vorhandene kanonische Version fort; da aktuell `v1.0.0.0` veröffentlicht ist, ist die nächste automatische Version `1.0.0.1`, sofern kein höherer Tag dazukommt. Nichtkanonische Tags (zum Beispiel mit führenden Nullen), veraltete Main-Branch-Läufe und manuelle Tags, die nicht neuer als die höchste veröffentlichte Version sind, werden abgelehnt. Unvollständige Entwürfe und Tags werden bei einem späteren Main-Lauf wiederverwendet oder bereinigt. Ein fehlgeschlagener Build oder Test veröffentlicht kein Release. Ein direkt gepushter Versionstag wird ebenfalls geprüft und nur veröffentlicht, wenn er auf einen bereits in `main` enthaltenen Commit zeigt und die neueste veröffentlichte Version übertrifft.
+Änderungen vor dem Merge auf einer privaten Jellyfin-12.x-Instanz testen und anschließend nach `main` mergen. Jeder Push auf `main` startet den Build- und Test-Workflow sowie den Release-Workflow; nach erfolgreichen Tests erstellt der Release-Workflow den passenden Tag und veröffentlicht ZIP sowie Manifest als GitHub-Release. Automatische Releases setzen die höchste vorhandene kanonische Version fort; da aktuell `v1.0.0.0` veröffentlicht ist, ist die nächste automatische Version `1.0.0.1`, sofern kein höherer Tag dazukommt. Nichtkanonische Tags (zum Beispiel mit führenden Nullen), veraltete Main-Branch-Läufe und manuelle Tags, die nicht neuer als die höchste veröffentlichte Version sind, werden abgelehnt. Unvollständige Entwürfe und Tags werden bei einem späteren Main-Lauf wiederverwendet oder bereinigt. Ein manuell gestarteter Release muss auf dem aktuellen `main`-Stand laufen und kann fehlende ZIP- oder Manifest-Dateien eines unvollständigen Releases ergänzen. Ein fehlgeschlagener Build oder Test veröffentlicht kein Release. Ein direkt gepushter Versionstag wird ebenfalls geprüft und nur veröffentlicht, wenn er auf einen bereits in `main` enthaltenen Commit zeigt und die neueste veröffentlichte Version übertrifft.
 
 GitHub Actions muss aktiviert sein. Der Workflow fordert für den isolierten Release-Schritt `contents: write` an; Organisationsrichtlinien dürfen diese Berechtigung nicht blockieren. Nach erfolgreicher Veröffentlichung den Katalog in Jellyfin aktualisieren.
 
@@ -144,7 +144,7 @@ Die Tests überprüfen das dauerhafte Speichern und Löschen offener Anforderung
 dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
 ```
 
-GitHub Actions führt Tests und Build bei Pull Requests und Pushes auf `main` aus; diese Builds stellen ein Artefakt für private Tests bereit. Ein Versions-Tag wie `v1.0.0.0` startet den Release-Workflow, der das Plugin testet und baut und anschließend ein versioniertes ZIP sowie das generierte Manifest an ein GitHub-Release hängt. Vor der Veröffentlichung zusätzlich Installation, Dashboard-Konfiguration, Passwortänderung, widerrufene Sitzungen, Reverse-Proxy-Basis-Pfad und Wiederherstellung der JSON-Anforderungen auf der privaten Jellyfin-12.x-Instanz testen.
+GitHub Actions führt Tests und Build bei jedem Pull Request, jedem Push auf `main` und jedem Versions-Tag aus; PR- und Main-Builds stellen ein Artefakt für private Tests bereit. Pushes auf `main` und Versions-Tags lösen nach erfolgreichen Tests den Release-Workflow aus, der ein versioniertes ZIP sowie das generierte Manifest an ein GitHub-Release hängt. Vor der Veröffentlichung zusätzlich Installation, Dashboard-Konfiguration, Passwortänderung, widerrufene Sitzungen, Reverse-Proxy-Basis-Pfad und Wiederherstellung der JSON-Anforderungen auf der privaten Jellyfin-12.x-Instanz testen.
 
 ## English
 
@@ -152,7 +152,7 @@ GitHub Actions führt Tests und Build bei Pull Requests und Pushes auf `main` au
 
 - Intended exclusively for Jellyfin Server **12.x**.
 - Built against Jellyfin API **12.2.0**; the manifest target ABI is `12.0.0.0`.
-- Do not use with Jellyfin 10.x or 11.x.
+- Only Jellyfin Server 12.x is supported.
 - The GitHub repository must be public for Jellyfin catalog installation. While it is private, only people with GitHub access can download the plugin.
 
 ### Features at a glance
@@ -207,7 +207,7 @@ Previously released plugin versions remain in the manifest and stay available in
 
 #### Publishing a release
 
-Test changes on a private Jellyfin 12.x instance before merging them into `main`. A push to `main` that changes `src/` or `tests/` automatically starts the release workflow: it runs the tests, increments the four-part plugin version, creates the corresponding tag, and publishes the ZIP and manifest as a GitHub release. Automatic releases continue from the highest existing canonical version; because `v1.0.0.0` is currently published, the next automatic version is `v1.0.0.1` unless a higher tag is added first. Noncanonical tags (for example, components with leading zeroes), stale main-branch runs, and manual tags that are not newer than the highest published version are rejected. Incomplete drafts and tags are reused or cleaned up on a later main-branch run. A failed build or test does not publish a release. Pushing a version tag directly also runs the tests and publishes it only if the tagged commit is already contained in `main` and its version exceeds the latest published version.
+Test changes on a private Jellyfin 12.x instance before merging them into `main`. Every push to `main` starts the build-and-test workflow and the release workflow; after tests pass, the release workflow creates the corresponding tag and publishes the ZIP and manifest as a GitHub release. Automatic releases continue from the highest existing canonical version; because `v1.0.0.0` is currently published, the next automatic version is `v1.0.0.1` unless a higher tag is added first. Noncanonical tags (for example, components with leading zeroes), stale main-branch runs, and manual tags that are not newer than the highest published version are rejected. Incomplete drafts and tags are reused or cleaned up on a later main-branch run. A manual release run must target the current `main` tip and can restore missing ZIP or manifest assets for an incomplete release. A failed build or test does not publish a release. Pushing a version tag directly also runs the tests and publishes it only if the tagged commit is already contained in `main` and its version exceeds the latest published version.
 
 GitHub Actions must be enabled. The workflow requests `contents: write` only for its isolated release job; organization policies must not block that permission. After the release succeeds, refresh the plugin catalog in Jellyfin.
 
@@ -288,4 +288,4 @@ Tests cover persistence and clearing of pending requirements, default configurat
 dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
 ```
 
-GitHub Actions runs tests and builds for pull requests and pushes to `main`; these builds provide an artifact for private testing. A version tag such as `v1.0.0.0` starts the release workflow, which tests and builds the plugin, then attaches a versioned ZIP and generated manifest to a GitHub release. Before publishing, also test installation, dashboard configuration, password changes, token revocation, reverse-proxy base paths, and restoring the JSON requirements on the private Jellyfin 12.x instance.
+GitHub Actions runs tests and builds for every pull request, every push to `main`, and every version tag; PR and main builds provide an artifact for private testing. Pushes to `main` and version tags start the release workflow after tests pass, attaching a versioned ZIP and generated manifest to a GitHub release. Before publishing, also test installation, dashboard configuration, password changes, token revocation, reverse-proxy base paths, and restoring the JSON requirements on the private Jellyfin 12.x instance.

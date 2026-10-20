@@ -4,11 +4,9 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'src/**'
-      - 'tests/**'
     tags:
       - 'v*'
+  workflow_dispatch:
 
 concurrency:
   group: jellyfin-plugin-release-${{ github.ref }}-${{ github.sha }}
@@ -126,6 +124,18 @@ jobs:
                   )
           else:
               current_sha = os.environ["GITHUB_SHA"]
+              if os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch":
+                  main_tip = subprocess.check_output(
+                      ["gh", "api",
+                       f"repos/{os.environ['GITHUB_REPOSITORY']}/branches/main",
+                       "--jq", ".commit.sha"],
+                      text=True,
+                  ).strip()
+                  if current_sha != main_tip:
+                      raise SystemExit(
+                          "Manual release dispatch must target the current main branch tip."
+                      )
+
               matching_tags = [
                   (version, tag)
                   for tag, version in tag_versions.items()
@@ -133,7 +143,30 @@ jobs:
               ]
               if matching_tags:
                   version, release_tag = max(matching_tags)
-                  recover_incomplete = False
+                  matching_release = next(
+                      (release for release in releases
+                       if release["tag_name"] == release_tag),
+                      None,
+                  )
+                  expected_package = (
+                      "Jellyfin.Plugin.ForcePasswordChange_"
+                      + ".".join(map(str, version))
+                      + ".zip"
+                  )
+                  has_complete_release = (
+                      matching_release is not None
+                      and not matching_release["draft"]
+                      and expected_package in {
+                          asset["name"] for asset in matching_release["assets"]
+                      }
+                      and "manifest.json" in {
+                          asset["name"] for asset in matching_release["assets"]
+                      }
+                  )
+                  recover_incomplete = (
+                      os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+                      and not has_complete_release
+                  )
               else:
                   if tag_versions:
                       latest_tag = max(tag_versions, key=tag_versions.get)
@@ -253,6 +286,19 @@ jobs:
             printf '%s' "${object_sha}"
           }
 
+          ensure_current_main_tip() {
+            if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+              local main_tip
+              main_tip="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/branches/main" \
+                --jq '.commit.sha')"
+              if [[ "${main_tip}" != "${GITHUB_SHA}" ]]; then
+                echo "Refusing to reserve a release for stale commit ${GITHUB_SHA}; current main is ${main_tip}." >&2
+                return 1
+              fi
+            fi
+          }
+
           bump_version() {
             VERSION="$(python3 -c '
           parts = list(map(int, __import__("sys").argv[1].split(".")))
@@ -271,6 +317,7 @@ jobs:
           }
 
           for attempt in {1..20}; do
+            ensure_current_main_tip
             TAG_COMMIT="$(get_tag_commit)"
             if [[ -n "${TAG_COMMIT}" ]]; then
               if [[ "${TAG_COMMIT}" == "${GITHUB_SHA}" ]]; then
@@ -321,6 +368,7 @@ jobs:
                   echo "Reserved tag ${RELEASE_TAG} does not point to this build commit." >&2
                   exit 1
                 }
+                ensure_current_main_tip
                 break
               fi
 
@@ -330,12 +378,14 @@ jobs:
                 exit 1
               fi
               if [[ "${TAG_COMMIT}" == "${GITHUB_SHA}" ]]; then
+                ensure_current_main_tip
                 break
               fi
               bump_version
             fi
           done
 
+          ensure_current_main_tip
           if [[ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
             echo "Could not reserve a unique release tag after 20 attempts." >&2
             exit 1
@@ -405,11 +455,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.reserve.outputs.release_tag }}
           VERSION: ${{ needs.reserve.outputs.version }}
+          RECOVER_INCOMPLETE: ${{ needs.reserve.outputs.recover_incomplete }}
         run: |
           set -euo pipefail
           PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
           RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
           LOOKUP_ERROR="$(mktemp)"
+
+          ensure_current_main_tip() {
+            if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+              local main_tip
+              main_tip="$(gh api \
+                "repos/${GITHUB_REPOSITORY}/branches/main" \
+                --jq '.commit.sha')"
+              if [[ "${main_tip}" != "${GITHUB_SHA}" ]]; then
+                echo "Refusing to publish stale commit ${GITHUB_SHA}; current main is ${main_tip}." >&2
+                return 1
+              fi
+            fi
+          }
+          ensure_current_main_tip
 
           if RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}" 2>"${LOOKUP_ERROR}")"; then
             :
@@ -439,19 +504,24 @@ jobs:
           rm -f "${LOOKUP_ERROR}"
 
           mkdir -p previous-release published-package retained-packages
+          PACKAGE_UPLOAD_REQUIRED=false
           if [[ "${IS_DRAFT}" == "true" ]]; then
             PACKAGE_PATH="${PACKAGE_NAME}"
           else
-            jq -e --arg package "${PACKAGE_NAME}" \
+            if jq -e --arg package "${PACKAGE_NAME}" \
               'any(.assets[]; .name == $package)' \
-              <<< "${RELEASE_JSON}" > /dev/null || {
-                echo "Published release is missing ${PACKAGE_NAME}; refusing to modify it." >&2
-                exit 1
-              }
-            gh release download "${RELEASE_TAG}" \
-              --pattern "${PACKAGE_NAME}" \
-              --dir published-package
-            PACKAGE_PATH="published-package/${PACKAGE_NAME}"
+              <<< "${RELEASE_JSON}" > /dev/null; then
+              gh release download "${RELEASE_TAG}" \
+                --pattern "${PACKAGE_NAME}" \
+                --dir published-package
+              PACKAGE_PATH="published-package/${PACKAGE_NAME}"
+            elif [[ "${RECOVER_INCOMPLETE}" == "true" && "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              PACKAGE_PATH="${PACKAGE_NAME}"
+              PACKAGE_UPLOAD_REQUIRED=true
+            else
+              echo "Published release is missing ${PACKAGE_NAME}; only a manual recovery run may repair it." >&2
+              exit 1
+            fi
           fi
 
           LATEST_MANIFEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
@@ -527,7 +597,8 @@ jobs:
                (.sourceUrl | startswith("https://github.com/"))))' \
             manifest.json > /dev/null
 
-          if [[ "${IS_DRAFT}" == "true" ]]; then
+          ensure_current_main_tip
+          if [[ "${IS_DRAFT}" == "true" || "${PACKAGE_UPLOAD_REQUIRED}" == "true" ]]; then
             gh release upload "${RELEASE_TAG}" "${PACKAGE_NAME}" manifest.json --clobber
           else
             gh release upload "${RELEASE_TAG}" manifest.json --clobber
@@ -537,5 +608,6 @@ jobs:
             '(.draft == $draft) and any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
             <<< "${RELEASE_JSON}" > /dev/null
           if [[ "${IS_DRAFT}" == "true" ]]; then
+            ensure_current_main_tip
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false
           fi
