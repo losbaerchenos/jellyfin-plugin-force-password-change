@@ -1,19 +1,46 @@
 name: Publish plugin release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release commit is on main
+        run: |
+          if ! git show-ref --verify --quiet refs/remotes/origin/main ||
+             ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "Release tags must point to a commit already contained in main." >&2
+            exit 1
+          fi
+
+      - name: Read and validate release version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag must use the vMAJOR.MINOR.PATCH.REVISION format, for example v1.0.0.0" >&2
+            exit 1
+          fi
+
+          IFS='.' read -r -a COMPONENTS <<< "$VERSION"
+          for component in "${COMPONENTS[@]}"; do
+            if (( ${#component} > 5 )) || (( 10#$component > 65534 )); then
+              echo "Each version component must be between 0 and 65534 for .NET AssemblyVersion." >&2
+              exit 1
+            fi
+          done
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -23,24 +50,87 @@ jobs:
         run: dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
 
       - name: Publish
-        run: dotnet publish src/Jellyfin.Plugin.ForcePasswordChange/Jellyfin.Plugin.ForcePasswordChange.csproj --configuration Release --no-restore --output output
+        run: >
+          dotnet publish src/Jellyfin.Plugin.ForcePasswordChange/Jellyfin.Plugin.ForcePasswordChange.csproj
+          --configuration Release
+          --no-restore
+          --output output
+          -p:Version="${VERSION}"
+          -p:AssemblyVersion="${VERSION}"
+          -p:FileVersion="${VERSION}"
 
-      - name: Package release
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          MANIFEST_URL="$(jq -r --arg version "$VERSION" '[.[0].versions[] | select(.version == $version) | .sourceUrl][0] // empty' manifest.json)"
-          EXPECTED_URL="https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/releases/download/${GITHUB_REF_NAME}/Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
-          if [[ "$MANIFEST_URL" != "$EXPECTED_URL" ]]; then
-            echo "Manifest entry for $VERSION must point to $EXPECTED_URL" >&2
-            exit 1
-          fi
-          PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
-          cd output
-          zip -r "../${PACKAGE_NAME}" .
-          echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "$GITHUB_ENV"
-
-      - name: Attach package to GitHub release
+      - name: Package plugin and repository manifest
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" "$PACKAGE_NAME" --clobber
+        run: |
+          PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${PACKAGE_NAME}"
+          TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          (cd output && zip -r "../${PACKAGE_NAME}" .)
+          mkdir release-assets previous-release
+
+          MANIFEST_SOURCE="manifest.json"
+          PREVIOUS_MANIFEST_TAG="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq 'sort_by(.published_at // .created_at) | reverse | [.[] | select(any(.assets[]; .name == "manifest.json")) | .tag_name] | first // empty')"
+          if [[ -n "$PREVIOUS_MANIFEST_TAG" ]]; then
+            gh release download "$PREVIOUS_MANIFEST_TAG" --pattern manifest.json --dir previous-release
+            MANIFEST_SOURCE="previous-release/manifest.json"
+          fi
+
+          jq \
+            --arg version "${VERSION}" \
+            --arg sourceUrl "${RELEASE_URL}" \
+            --arg timestamp "${TIMESTAMP}" \
+            '.[0] as $plugin
+            | ($plugin.versions[0]) as $versionTemplate
+            | [
+                $plugin
+                | .versions = (
+                    ([.versions[] | select(.version != $version)])
+                    + [
+                        ($versionTemplate
+                          | .version = $version
+                          | .changelog = ("Release " + $version + ". See the GitHub release notes.")
+                          | .sourceUrl = $sourceUrl
+                          | .timestamp = $timestamp)
+                      ]
+                  )
+              ]' \
+            "${MANIFEST_SOURCE}" > release-assets/manifest.json
+
+          jq -e --arg version "${VERSION}" \
+            'type == "array" and length == 1 and
+             (.[0].versions | any(.version == $version and
+               .targetAbi == "12.0.0.0" and
+               (.sourceUrl | startswith("https://github.com/"))))' \
+            release-assets/manifest.json > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-release-assets
+          path: |
+            Jellyfin.Plugin.ForcePasswordChange_*.zip
+            release-assets/manifest.json
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin-release-assets
+          path: .
+
+      - name: Create GitHub release with plugin package and repository manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "Jellyfin.Plugin.ForcePasswordChange_${GITHUB_REF_NAME#v}.zip" \
+            "release-assets/manifest.json" \
+            --title "Force Password Change ${GITHUB_REF_NAME#v}" \
+            --generate-notes
