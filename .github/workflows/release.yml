@@ -459,8 +459,14 @@ jobs:
         run: |
           set -euo pipefail
           PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
-          RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
           LOOKUP_ERROR="$(mktemp)"
+
+          find_release() {
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
+              jq -c --arg tag "${RELEASE_TAG}" \
+                '[.[][] | select(.tag_name == $tag)] | sort_by(.draft) | .[0] // empty'
+          }
 
           ensure_current_main_tip() {
             if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
@@ -476,19 +482,28 @@ jobs:
           }
           ensure_current_main_tip
 
-          if RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}" 2>"${LOOKUP_ERROR}")"; then
-            :
-          elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
-            gh release create "${RELEASE_TAG}" \
-              --draft \
-              --title "Force Password Change ${VERSION}" \
-              --generate-notes
-            RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
-          else
-            cat "${LOOKUP_ERROR}" >&2
-            exit 1
+          RELEASE_JSON="$(find_release)"
+          if [[ -z "${RELEASE_JSON}" ]]; then
+            if ! RELEASE_JSON="$(gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/releases" \
+              -f "tag_name=${RELEASE_TAG}" \
+              -f "target_commitish=${GITHUB_SHA}" \
+              -f "name=Force Password Change ${VERSION}" \
+              -F draft=true \
+              -F generate_release_notes=true \
+              2>"${LOOKUP_ERROR}")"; then
+              RELEASE_JSON="$(find_release)"
+              if [[ -z "${RELEASE_JSON}" ]]; then
+                cat "${LOOKUP_ERROR}" >&2
+                exit 1
+              fi
+            fi
           fi
 
+          [[ "$(jq -r '.tag_name' <<< "${RELEASE_JSON}")" == "${RELEASE_TAG}" ]] || {
+            echo "GitHub returned a release for an unexpected tag." >&2
+            exit 1
+          }
           RELEASE_ID="$(jq -r '.id' <<< "${RELEASE_JSON}")"
           IS_DRAFT="$(jq -r '.draft' <<< "${RELEASE_JSON}")"
           TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object | [.type, .sha] | @tsv')"
@@ -603,7 +618,7 @@ jobs:
           else
             gh release upload "${RELEASE_TAG}" manifest.json --clobber
           fi
-          RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
           jq -e --arg package "${PACKAGE_NAME}" --argjson draft "${IS_DRAFT}" \
             '(.draft == $draft) and any(.assets[]; .name == $package) and any(.assets[]; .name == "manifest.json")' \
             <<< "${RELEASE_JSON}" > /dev/null
