@@ -243,6 +243,31 @@ jobs:
           LOOKUP_ERROR="$(mktemp)"
           RELEASE_EXISTS=false
 
+          get_tag_commit() {
+            local object_json object_type object_sha
+            if ! object_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" 2>"${LOOKUP_ERROR}")"; then
+              if grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
+                printf ''
+                return 0
+              fi
+              cat "${LOOKUP_ERROR}" >&2
+              return 1
+            fi
+
+            object_type="$(jq -r '.object.type' <<< "${object_json}")"
+            object_sha="$(jq -r '.object.sha' <<< "${object_json}")"
+            while [[ "${object_type}" == "tag" ]]; do
+              object_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")"
+              object_type="$(jq -r '.object.type' <<< "${object_json}")"
+              object_sha="$(jq -r '.object.sha' <<< "${object_json}")"
+            done
+            if [[ "${object_type}" != "commit" ]]; then
+              echo "Release tag ${RELEASE_TAG} resolves to an unsupported Git object: ${object_type}." >&2
+              return 1
+            fi
+            printf '%s' "${object_sha}"
+          }
+
           if RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}" 2>"${LOOKUP_ERROR}")"; then
             RELEASE_EXISTS=true
           elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
@@ -252,14 +277,7 @@ jobs:
             exit 1
           fi
 
-          if TAG_COMMIT="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq '.sha' 2>"${LOOKUP_ERROR}")"; then
-            :
-          elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
-            TAG_COMMIT=""
-          else
-            cat "${LOOKUP_ERROR}" >&2
-            exit 1
-          fi
+          TAG_COMMIT="$(get_tag_commit)"
           rm -f "${LOOKUP_ERROR}"
 
           if [[ -n "${TAG_COMMIT}" && "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
@@ -303,17 +321,26 @@ jobs:
               echo "Release tag ${RELEASE_TAG} already exists at a different commit." >&2
               exit 1
             fi
+            if [[ -z "${TAG_COMMIT}" ]]; then
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f "ref=refs/tags/${RELEASE_TAG}" \
+                -f "sha=${GITHUB_SHA}"
+              TAG_COMMIT="$(get_tag_commit)"
+              if [[ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
+                echo "Created release tag ${RELEASE_TAG} does not point to this build's ${GITHUB_SHA}." >&2
+                exit 1
+              fi
+            fi
             gh release create "${RELEASE_TAG}" \
               --draft \
               --title "Force Password Change ${VERSION}" \
-              --target "${GITHUB_SHA}" \
               --generate-notes
             RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
           fi
 
           RELEASE_ID="$(jq -r '.id' <<< "${RELEASE_JSON}")"
           IS_DRAFT="$(jq -r '.draft' <<< "${RELEASE_JSON}")"
-          TAG_COMMIT="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq '.sha')"
+          TAG_COMMIT="$(get_tag_commit)"
           if [[ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]]; then
             echo "Release tag ${RELEASE_TAG} points to ${TAG_COMMIT}, not this build's ${GITHUB_SHA}." >&2
             exit 1
