@@ -1,0 +1,1 @@
+# jellyfin-plugin-force-password-change
