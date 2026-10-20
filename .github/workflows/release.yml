@@ -2,6 +2,11 @@ name: Publish plugin release
 
 on:
   push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'tests/**'
     tags:
       - 'v*'
 
@@ -15,6 +20,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.release_version.outputs.release_tag }}
+      version: ${{ steps.release_version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,21 +38,66 @@ jobs:
           fi
 
       - name: Read and validate release version
+        id: release_version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Tag must use the vMAJOR.MINOR.PATCH.REVISION format, for example v1.0.0.0" >&2
-            exit 1
-          fi
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
 
-          IFS='.' read -r -a COMPONENTS <<< "$VERSION"
-          for component in "${COMPONENTS[@]}"; do
-            if (( ${#component} > 5 )) || (( 10#$component > 65534 )); then
-              echo "Each version component must be between 0 and 65534 for .NET AssemblyVersion." >&2
-              exit 1
-            fi
-          done
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          max_component = 65534
+          pattern = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)\.([0-9]+)$")
+
+          def parse_tag(tag):
+              match = pattern.fullmatch(tag)
+              if match is None:
+                  return None
+              version = tuple(map(int, match.groups()))
+              return version if all(0 <= part <= max_component for part in version) else None
+
+          if os.environ["GITHUB_REF_TYPE"] == "tag":
+              release_tag = os.environ["GITHUB_REF_NAME"]
+              version = parse_tag(release_tag)
+              if version is None:
+                  raise SystemExit("Tag must use vMAJOR.MINOR.PATCH.REVISION, with each component between 0 and 65534.")
+          else:
+              tags = subprocess.check_output(
+                  ["git", "tag", "--list", "v*"], text=True
+              ).splitlines()
+              versions = [(parse_tag(tag), tag) for tag in tags]
+              versions = [(version, tag) for version, tag in versions if version is not None]
+              if not versions:
+                  version = (1, 0, 0, 0)
+                  release_tag = "v1.0.0.0"
+              else:
+                  latest_version, latest_tag = max(versions)
+                  latest_tag_commit = subprocess.check_output(
+                      ["git", "rev-list", "-n", "1", latest_tag], text=True
+                  ).strip()
+
+                  if latest_tag_commit == os.environ["GITHUB_SHA"]:
+                      version = latest_version
+                      release_tag = latest_tag
+                  else:
+                      parts = list(latest_version)
+                      for index in range(3, -1, -1):
+                          if parts[index] < max_component:
+                              parts[index] += 1
+                              for following in range(index + 1, 4):
+                                  parts[following] = 0
+                              break
+                      else:
+                          raise SystemExit("No valid .NET AssemblyVersion remains for an automatic release.")
+                      version = tuple(parts)
+                      release_tag = "v" + ".".join(map(str, version))
+
+          version_text = ".".join(map(str, version))
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"VERSION={version_text}\nRELEASE_TAG={release_tag}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
+              output_file.write(f"version={version_text}\nrelease_tag={release_tag}\n")
+          print(f"Release version: {version_text} ({release_tag})")
+          PY
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -93,18 +146,21 @@ jobs:
       - name: Create GitHub release with plugin package and repository manifest
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${GITHUB_REF_NAME#v}.zip"
-          RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}"
+          PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
+          RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
           LOOKUP_ERROR="$(mktemp)"
 
           if RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}" 2>"${LOOKUP_ERROR}")"; then
             :
           elif grep -Fq '(HTTP 404)' "${LOOKUP_ERROR}"; then
-            gh release create "${GITHUB_REF_NAME}" \
+            gh release create "${RELEASE_TAG}" \
               --draft \
-              --title "Force Password Change ${GITHUB_REF_NAME#v}" \
+              --title "Force Password Change ${VERSION}" \
+              --target "${GITHUB_SHA}" \
               --generate-notes
             RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
           else
@@ -126,7 +182,7 @@ jobs:
                 echo "Published release is missing ${PACKAGE_NAME}; refusing to modify it." >&2
                 exit 1
               }
-            gh release download "${GITHUB_REF_NAME}" \
+            gh release download "${RELEASE_TAG}" \
               --pattern "${PACKAGE_NAME}" \
               --dir published-package
             PACKAGE_PATH="published-package/${PACKAGE_NAME}"
@@ -140,11 +196,11 @@ jobs:
             MANIFEST_SOURCE="previous-release/manifest.json"
           fi
 
-          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${PACKAGE_NAME}"
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${PACKAGE_NAME}"
           PACKAGE_CHECKSUM="$(md5sum "${PACKAGE_PATH}" | awk '{print toupper($1)}')"
           TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           jq \
-            --arg version "${GITHUB_REF_NAME#v}" \
+            --arg version "${VERSION}" \
             --arg sourceUrl "${RELEASE_URL}" \
             --arg checksum "${PACKAGE_CHECKSUM}" \
             --arg timestamp "${TIMESTAMP}" \
@@ -195,7 +251,7 @@ jobs:
             mv manifest.tmp manifest.json
           done < <(jq -r '.[0].versions[] | select((.checksum // "") == "") | [.version, .sourceUrl] | @tsv' manifest.json)
 
-          jq -e --arg version "${GITHUB_REF_NAME#v}" \
+          jq -e --arg version "${VERSION}" \
             --arg checksum "${PACKAGE_CHECKSUM}" \
             'type == "array" and length == 1 and
              (.[0].versions | all(.[]; (.checksum | type == "string" and
@@ -206,9 +262,9 @@ jobs:
             manifest.json > /dev/null
 
           if [[ "${IS_DRAFT}" == "true" ]]; then
-            gh release upload "${GITHUB_REF_NAME}" "${PACKAGE_NAME}" manifest.json --clobber
+            gh release upload "${RELEASE_TAG}" "${PACKAGE_NAME}" manifest.json --clobber
           else
-            gh release upload "${GITHUB_REF_NAME}" manifest.json --clobber
+            gh release upload "${RELEASE_TAG}" manifest.json --clobber
           fi
           RELEASE_JSON="$(gh api "${RELEASE_ENDPOINT}")"
           jq -e --arg package "${PACKAGE_NAME}" --argjson draft "${IS_DRAFT}" \

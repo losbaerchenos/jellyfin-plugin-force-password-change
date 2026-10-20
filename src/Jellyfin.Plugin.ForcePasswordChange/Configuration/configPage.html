@@ -73,15 +73,19 @@
           }
 
           const status = error?.status
-            ? `HTTP ${error.status}${error.statusText ? ` (${error.statusText})` : ''}`
+            ? 'HTTP ' + error.status + (error.statusText ? ' (' + error.statusText + ')' : '')
             : '';
           const detail = message ? String(message) : '';
           return [status, detail].filter(Boolean).join(': ') || 'Unbekannter Fehler. Weitere Details stehen in der Browser-Konsole.';
         }
 
         function showError(error) {
-          console.error('Force Password Change request failed', error);
-          result.textContent = `Fehler: ${getErrorMessage(error)}`;
+          console.error('Force Password Change request failed', {
+            status: error?.status,
+            statusText: error?.statusText,
+            message: getErrorMessage(error)
+          });
+          result.textContent = 'Fehler: ' + getErrorMessage(error);
         }
 
         async function refreshUsers() {
@@ -154,7 +158,7 @@
           toggleButton.disabled = true;
           try {
             await ApiClient.ajax({
-              url: ApiClient.getUrl(`/Plugin/ForcePasswordChange/User/${encodeURIComponent(userId)}/${action}`),
+              url: ApiClient.getUrl('/Plugin/ForcePasswordChange/User/' + encodeURIComponent(userId) + '/' + action),
               type: 'POST'
             });
             result.textContent = isRequired
@@ -169,8 +173,9 @@
             try {
               await refreshUsers();
             } catch (error) {
-              console.error('Force Password Change succeeded, but the user list could not be refreshed', error);
-              result.textContent += ` Die Benutzerliste konnte nicht aktualisiert werden: ${getErrorMessage(error)}`;
+              const refreshError = getErrorMessage(error);
+              console.error('Force Password Change succeeded, but the user list could not be refreshed', refreshError);
+              result.textContent += ' Die Benutzerliste konnte nicht aktualisiert werden: ' + refreshError;
             }
           } catch (error) {
             showError(error);

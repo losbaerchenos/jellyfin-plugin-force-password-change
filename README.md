@@ -63,18 +63,9 @@ Bereits veröffentlichte Plugin-Versionen bleiben im Manifest erhalten und könn
 
 #### Releases veröffentlichen
 
-Für eine Veröffentlichung zuerst Änderungen auf einer privaten Jellyfin-12.x-Instanz testen und anschließend das GitHub-Repository öffentlich machen. Ein Versions-Tag startet dann automatisch den Release-Workflow: Er validiert die Tag-Version, führt alle Tests aus, baut das Plugin mit dieser Version, erstellt das ZIP und erzeugt ein GitHub-Release samt generierter Notizen und Jellyfin-Manifest. Die Katalog-URL oben zeigt immer auf das Manifest des neuesten Releases.
+Änderungen vor dem Merge auf einer privaten Jellyfin-12.x-Instanz testen und anschließend nach `main` mergen. Bei Änderungen an `src/` oder `tests/` startet der Workflow automatisch: Er führt die Tests aus, erhöht die vierteilige Plugin-Version, erstellt den passenden Tag und veröffentlicht ZIP sowie Manifest als GitHub-Release. Die erste automatisch vergebene Version ist `1.0.0.0`; danach wird die letzte Versionsnummer erhöht. Bei einem fehlgeschlagenen Build oder Test wird kein Release erstellt und kein Tag erzeugt. Ein direkt gepushter Versionstag wird ebenfalls geprüft und veröffentlicht, sofern er auf einen bereits in `main` enthaltenen Commit zeigt.
 
-Ein Tag wird nach erfolgreichem Test und Merge auf `main` einmalig gepusht. Beispiel für die erste Version:
-
-```powershell
-git checkout main
-git pull
-git tag v1.0.0.0
-git push origin v1.0.0.0
-```
-
-Der Der Workflow fordert mit `contents: write` die nötigen Berechtigungen zum Erstellen des Releases an. GitHub Actions muss aktiviert sein; Organisationsrichtlinien dürfen Schreibzugriffe des Workflow-Tokens nicht verhindern. Schlägt der Build oder ein Test fehl, wird kein Release angelegt. Pro Versionsnummer kann nur ein Tag veröffentlicht werden; für das nächste Release eine höhere vierteilige Versionsnummer verwenden (zum Beispiel `v1.0.1.0`).
+GitHub Actions muss aktiviert sein. Der Workflow fordert für den isolierten Release-Schritt `contents: write` an; Organisationsrichtlinien dürfen diese Berechtigung nicht blockieren. Nach erfolgreicher Veröffentlichung den Katalog in Jellyfin aktualisieren.
 
 #### Nach der Installation: Passwortwechsel einrichten
 
@@ -216,18 +207,9 @@ Previously released plugin versions remain in the manifest and stay available in
 
 #### Publishing a release
 
-First test the changes on a private Jellyfin 12.x instance, then make the GitHub repository public. Pushing a version tag automatically starts the release workflow: it validates the tag, runs all tests, builds the plugin with that version, packages the ZIP, and creates a GitHub release with generated notes and the Jellyfin manifest. The catalog URL above always resolves to the manifest for the latest release.
+Test changes on a private Jellyfin 12.x instance before merging them into `main`. A push to `main` that changes `src/` or `tests/` automatically starts the release workflow: it runs the tests, increments the four-part plugin version, creates the corresponding tag, and publishes the ZIP and manifest as a GitHub release. The first automatically assigned version is `1.0.0.0`; later releases increment the previous version. If a build or test fails, no release or tag is created. Pushing a version tag directly also runs the tests and publishes it, provided the tagged commit is already contained in `main`.
 
-After the changes have passed testing and have been merged into `main`, push a version tag once. Example for the first release:
-
-```powershell
-git checkout main
-git pull
-git tag v1.0.0.0
-git push origin v1.0.0.0
-```
-
-The workflow requests the `contents: write` permission needed to create the release. GitHub Actions must be enabled, and organization policies must not block write access for the workflow token. If a build or test fails, no release is created. Each version tag can only be released once; use a higher four-part version for the next release (for example, `v1.0.1.0`).
+GitHub Actions must be enabled. The workflow requests `contents: write` only for its isolated release job; organization policies must not block that permission. After the release succeeds, refresh the plugin catalog in Jellyfin.
 
 #### After installation: set up a password change
 
