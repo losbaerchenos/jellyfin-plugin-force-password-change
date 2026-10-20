@@ -1,4 +1,3 @@
-using System.Reflection;
 using Jellyfin.Plugin.ForcePasswordChange;
 using Xunit;
 
@@ -15,9 +14,7 @@ public sealed class PasswordChangeStoreTests
     [Fact]
     public void PasswordChangePageIsEmbedded()
     {
-        var pluginAssembly = Assembly.LoadFrom(
-            Path.Combine(AppContext.BaseDirectory, "Jellyfin.Plugin.ForcePasswordChange.dll"));
-        using var page = pluginAssembly.GetManifestResourceStream(
+        using var page = typeof(Plugin).Assembly.GetManifestResourceStream(
             "Jellyfin.Plugin.ForcePasswordChange.Configuration.passwordChangePage.html");
 
         Assert.NotNull(page);
@@ -30,9 +27,7 @@ public sealed class PasswordChangeStoreTests
     [Fact]
     public void ConfigurationPageDisplaysHttpErrorDetails()
     {
-        var pluginAssembly = Assembly.LoadFrom(
-            Path.Combine(AppContext.BaseDirectory, "Jellyfin.Plugin.ForcePasswordChange.dll"));
-        using var page = pluginAssembly.GetManifestResourceStream(
+        using var page = typeof(Plugin).Assembly.GetManifestResourceStream(
             "Jellyfin.Plugin.ForcePasswordChange.Configuration.configPage.html");
 
         Assert.NotNull(page);
