@@ -17,6 +17,10 @@ public sealed class PasswordChangeStoreTests
         var html = ReadConfigurationPage("passwordChangePage.html");
         Assert.Contains("/Users/AuthenticateByName", html);
         Assert.Contains("/ChangePassword", html);
+        Assert.Contains("headers.set('Authorization', getAuthorizationHeader())", html);
+        Assert.Contains("values.push(`Token=\"${accessToken}\"`)", html);
+        Assert.DoesNotContain("X-Emby-Authorization", html);
+        Assert.DoesNotContain("X-Emby-Token", html);
     }
 
     [Fact]
