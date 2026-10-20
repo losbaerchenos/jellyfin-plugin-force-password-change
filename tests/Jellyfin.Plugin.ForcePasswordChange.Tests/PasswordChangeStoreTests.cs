@@ -12,14 +12,9 @@ public sealed class PasswordChangeStoreTests
     }
 
     [Fact]
-    public void PasswordChangePageIsEmbedded()
+    public void PasswordChangePageUsesExpectedEndpoints()
     {
-        using var page = typeof(Plugin).Assembly.GetManifestResourceStream(
-            "Jellyfin.Plugin.ForcePasswordChange.Configuration.passwordChangePage.html");
-
-        Assert.NotNull(page);
-        using var reader = new StreamReader(page!);
-        var html = reader.ReadToEnd();
+        var html = ReadConfigurationPage("passwordChangePage.html");
         Assert.Contains("/Users/AuthenticateByName", html);
         Assert.Contains("/ChangePassword", html);
     }
@@ -27,17 +22,20 @@ public sealed class PasswordChangeStoreTests
     [Fact]
     public void ConfigurationPageDisplaysHttpErrorDetails()
     {
-        using var page = typeof(Plugin).Assembly.GetManifestResourceStream(
-            "Jellyfin.Plugin.ForcePasswordChange.Configuration.configPage.html");
+        var html = ReadConfigurationPage("configPage.html");
 
-        Assert.NotNull(page);
-        using var reader = new StreamReader(page!);
-        var html = reader.ReadToEnd();
-
-        Assert.Contains("error.responseJSON", html);
-        Assert.Contains("error.responseText", html);
-        Assert.Contains("HTTP ${error.status}", html);
+        Assert.Contains("error?.responseJSON", html);
+        Assert.Contains("error?.responseText", html);
+        Assert.Contains("'HTTP ' + error.status", html);
         Assert.Contains("user list could not be refreshed", html);
+        Assert.Contains("'/Plugin/ForcePasswordChange/User/' + encodeURIComponent(userId) + '/' + action", html);
+        Assert.DoesNotContain("`${", html);
+    }
+
+    private static string ReadConfigurationPage(string fileName)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Configuration", fileName);
+        return File.ReadAllText(path);
     }
 
     [Fact]
