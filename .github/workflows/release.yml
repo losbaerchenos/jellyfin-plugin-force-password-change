@@ -1,8 +1,9 @@
 name: Publish plugin release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -12,35 +13,65 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.release.tag_name }}
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
+      - name: Read and validate release version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag must use the vMAJOR.MINOR.PATCH.REVISION format, for example v1.0.0.0" >&2
+            exit 1
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
       - name: Test
         run: dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
 
       - name: Publish
-        run: dotnet publish src/Jellyfin.Plugin.ForcePasswordChange/Jellyfin.Plugin.ForcePasswordChange.csproj --configuration Release --no-restore --output output
+        run: >
+          dotnet publish src/Jellyfin.Plugin.ForcePasswordChange/Jellyfin.Plugin.ForcePasswordChange.csproj
+          --configuration Release
+          --no-restore
+          --output output
+          -p:Version="${VERSION}"
+          -p:AssemblyVersion="${VERSION}"
+          -p:FileVersion="${VERSION}"
 
-      - name: Package release
+      - name: Package plugin and repository manifest
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          MANIFEST_URL="$(jq -r --arg version "$VERSION" '[.[0].versions[] | select(.version == $version) | .sourceUrl][0] // empty' manifest.json)"
-          EXPECTED_URL="https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/releases/download/${GITHUB_REF_NAME}/Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
-          if [[ "$MANIFEST_URL" != "$EXPECTED_URL" ]]; then
-            echo "Manifest entry for $VERSION must point to $EXPECTED_URL" >&2
-            exit 1
-          fi
           PACKAGE_NAME="Jellyfin.Plugin.ForcePasswordChange_${VERSION}.zip"
-          cd output
-          zip -r "../${PACKAGE_NAME}" .
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${PACKAGE_NAME}"
+          TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          (cd output && zip -r "../${PACKAGE_NAME}" .)
+
+          mkdir release-assets
+          jq \
+            --arg version "${VERSION}" \
+            --arg sourceUrl "${RELEASE_URL}" \
+            --arg timestamp "${TIMESTAMP}" \
+            '.[0] as $plugin
+            | $plugin
+            | .versions = [
+                ($plugin.versions[0]
+                  | .version = $version
+                  | .changelog = ("Release " + $version + ". See the GitHub release notes.")
+                  | .sourceUrl = $sourceUrl
+                  | .timestamp = $timestamp)
+              ]' \
+            manifest.json > release-assets/manifest.json
+
           echo "PACKAGE_NAME=${PACKAGE_NAME}" >> "$GITHUB_ENV"
 
-      - name: Attach package to GitHub release
+      - name: Create GitHub release with plugin package and repository manifest
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" "$PACKAGE_NAME" --clobber
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "${PACKAGE_NAME}" \
+            "release-assets/manifest.json" \
+            --title "Force Password Change ${VERSION}" \
+            --generate-notes

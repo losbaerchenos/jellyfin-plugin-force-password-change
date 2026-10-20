@@ -9,7 +9,7 @@ Ein Plugin, mit dem Administratoren für einzelne lokale Jellyfin-Konten einen P
 - Ausschließlich für Jellyfin Server **12.x** vorgesehen.
 - Gegen Jellyfin API **12.2.0** gebaut; die Manifest-ABI ist `12.0.0.0`.
 - Nicht mit Jellyfin 10.x oder 11.x verwenden.
-- Das Repository ist für private Tests gedacht. Es ist noch kein GitHub-Release mit installierbarem Plugin-ZIP veröffentlicht; deshalb ist die Installation aus dem Jellyfin-Katalog derzeit noch nicht aktiv.
+- Für die Installation über den Jellyfin-Katalog muss dieses GitHub-Repository öffentlich sein. Solange es privat ist, können nur Personen mit GitHub-Zugriff das Plugin herunterladen.
 
 ### Funktionen im Überblick
 
@@ -26,61 +26,54 @@ Das Plugin unterstützt lokale Jellyfin-Konten, die von Jellyfin verwaltet werde
 
 ### Installation
 
-Das Plugin kann manuell installiert oder nach Veröffentlichung über ein eigenes Jellyfin-Plugin-Repository hinzugefügt werden. Jellyfin 12.x ist erforderlich. Vor dem Einspielen auf dem privaten Server ein Backup der Jellyfin-Konfiguration anlegen.
+Voraussetzung: Jellyfin Server **12.x**. Vor der Installation auf dem eigenen Server ein Backup der Jellyfin-Konfiguration anlegen.
 
-#### Weg 1: Manuelle Installation (für private Tests empfohlen)
+#### Weg 1: Manuelle Installation
 
-1. Öffne die [GitHub-Actions-Seite des Projekts](https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/actions) und wähle den letzten erfolgreichen **Build and test**-Workflow auf dem Branch `main`.
-2. Lade unter **Artifacts** das Archiv `jellyfin-plugin-force-password-change` herunter. Es ist ein ZIP-Archiv mit `Jellyfin.Plugin.ForcePasswordChange.dll` und den zugehörigen Build-Dateien.
-3. Ermittle den Plugin-Ordner deiner Jellyfin-Installation:
+1. Lade das neueste Plugin-ZIP von der [Release-Seite](https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/releases/latest) herunter. Für Tests einer noch nicht veröffentlichten Version kannst du stattdessen das `jellyfin-plugin-force-password-change`-Artefakt des letzten erfolgreichen [GitHub-Actions-Builds](https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/actions/workflows/build.yml?query=branch%3Amain) herunterladen.
+2. Stoppe Jellyfin. Bei einer Linux-Paketinstallation: `sudo systemctl stop jellyfin`; bei Docker den Container stoppen.
+3. Öffne den Plugin-Ordner deiner Installation:
 
-   | Installation | Plugin-Ordner |
-   |---|---|
-   | Windows-Dienst / Installer | `C:\ProgramData\Jellyfin\Server\plugins` |
-   | Windows, direkter Benutzerstart | `%LOCALAPPDATA%\jellyfin\plugins` |
-   | Debian/Ubuntu Linux | `/var/lib/jellyfin/plugins` |
-   | Docker/Container | `/config/plugins` **im Container**; auf dem Host entspricht das dem eingebundenen `/config`-Volume |
+   - Windows-Dienst/Installer: `C:\ProgramData\Jellyfin\Server\plugins`
+   - Windows, direkter Benutzerstart: `%LOCALAPPDATA%\jellyfin\plugins`
+   - Debian/Ubuntu: `/var/lib/jellyfin/plugins`
+   - Docker: `/config/plugins` im Container (das eingebundene `/config`-Volume auf dem Host)
 
-   Linux-Paketpfade können je nach Distribution abweichen. Maßgeblich ist das `plugins`-Verzeichnis unter Jellyfins Datenverzeichnis.
-4. Beende den Jellyfin-Server, damit keine Plugin-Dateien verwendet werden (Linux-Paketinstallation: `sudo systemctl stop jellyfin`; Docker: den Container stoppen).
-5. Erstelle darin den Versionsordner `Force Password Change_1.0.0.0`, zum Beispiel `C:\ProgramData\Jellyfin\Server\plugins\Force Password Change_1.0.0.0` oder `/var/lib/jellyfin/plugins/Force Password Change_1.0.0.0`.
-6. Entpacke das Actions-Artefakt-ZIP direkt in diesen Versionsordner. Die Plugin-DLL muss direkt darin liegen und darf nicht noch in einem zusätzlichen Unterordner stecken. Wenn du das Archiv zuerst in einem anderen Ordner entpackt hast, kopiere dessen Dateien in den Versionsordner und behalte die Verzeichnisstruktur bei.
-7. Stelle bei Linux- und Docker-Installationen sicher, dass der Jellyfin-Prozess die Dateien lesen kann.
-8. Starte Jellyfin wieder (Linux-Paketinstallation: `sudo systemctl start jellyfin`; Docker: den Container starten). Öffne **Dashboard → Plugins → My Plugins** und prüfe, dass **Force Password Change** geladen und unterstützt ist. Falls es fehlt oder als nicht unterstützt angezeigt wird, prüfe Server-Version, Ordnerstruktur, Dateirechte und Jellyfin-Logs.
+   Linux-Pfade können distributionsabhängig abweichen; verwende den `plugins`-Ordner unter Jellyfins Datenverzeichnis.
+4. Erstelle darin den Versionsordner `Force Password Change_1.0.0.0` und entpacke den Inhalt des ZIP-Archivs direkt hinein. Die Datei `Jellyfin.Plugin.ForcePasswordChange.dll` muss direkt im Versionsordner liegen, nicht in einem zusätzlichen Unterordner. Bei einer neueren Plugin-Version den Ordnernamen entsprechend anpassen.
+5. Starte Jellyfin wieder. Im Dashboard unter **Plugins → My Plugins** sollte **Force Password Change** als installiert und unterstützt erscheinen.
 
-Für einen lokalen Build sind .NET 10 SDK und Zugriff auf NuGet erforderlich:
+Das ZIP benötigt keinen Build und kein zusätzliches Entpack- oder Installationswerkzeug. Bei Updates Jellyfin stoppen, den Plugin-Dateiordner durch die neue Version ersetzen und Jellyfin neu starten. Die Konfiguration unter `plugins/configurations` nicht löschen; dort liegen auch die persistenten Passwortwechsel-Anforderungen.
 
-```powershell
-dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
-dotnet publish src/Jellyfin.Plugin.ForcePasswordChange/Jellyfin.Plugin.ForcePasswordChange.csproj --configuration Release --output output
-Compress-Archive -Path output\* -DestinationPath Jellyfin.Plugin.ForcePasswordChange_1.0.0.0.zip -Force
-```
+#### Weg 2: Installation über das Plugin-Repository
 
-Installiere nur, wenn alle Tests erfolgreich sind. Für ein Update zuerst Jellyfin beenden, dann den Inhalt des Plugin-Versionsordners durch die neue Version ersetzen und Jellyfin erneut starten. **Nicht** die Plugin-Konfiguration löschen: Die offenen Passwortwechsel-Anforderungen liegen separat unter `plugins/configurations/Jellyfin.Plugin.ForcePasswordChange.pending-users.json`. Auch andere Plugin-Einstellungen liegen im Konfigurationsverzeichnis.
+Das Repository muss öffentlich sein, damit Jellyfin Manifest und ZIP ohne GitHub-Anmeldung laden kann. Solange das GitHub-Repository privat ist, ist nur die manuelle Installation für Personen mit Repository-Zugriff möglich.
 
-#### Weg 2: Über ein eigenes Plugin-Repository
-
-Dieser Weg ist möglich, sobald eine getestete Version als GitHub-Release veröffentlicht wurde. Die Plugin-Repository-Liste und die Release-Datei müssen vom Jellyfin-Server ohne GitHub-Anmeldung erreichbar sein. Bei einem privaten GitHub-Repository kann Jellyfin das Manifest und das Paket nicht mit GitHub-Zugangsdaten abrufen; solange das Projekt privat bleiben soll, verwende Weg 1.
-
-1. Stelle sicher, dass das GitHub-Repository und seine Release-Dateien öffentlich und ohne Anmeldung erreichbar sind. Falls das Repository privat bleiben soll, verwende Weg 1; Jellyfin kann keine privaten GitHub-Dateien mit deinen GitHub-Zugangsdaten abrufen.
-2. Erstelle für die Version `1.0.0.0` ein GitHub-Release mit dem Tag `v1.0.0.0`. Der Release-Workflow prüft die Tests, baut das Plugin und hängt `Jellyfin.Plugin.ForcePasswordChange_1.0.0.0.zip` an das Release an.
-3. Prüfe, dass die Manifest-Datei unter folgender URL öffentlich abrufbar ist:
-
-   `https://raw.githubusercontent.com/losbaerchenos/jellyfin-plugin-force-password-change/main/manifest.json`
-
-   Das Manifest verweist auf das ZIP im Release. Sowohl diese URL als auch das Release-Paket müssen ohne Anmeldung erreichbar sein. Solange das Release nicht veröffentlicht wurde, funktioniert die Katalog-Installation noch nicht.
-4. Melde dich als Jellyfin-Administrator im Web-Dashboard an und öffne **Dashboard → Plugins → Repositories**. Je nach Dashboard-Version erreichst du die Verwaltung über das Repository-/Zahnrad-Symbol auf der Plugins-Seite.
-5. Wähle **+ / Add repository** und trage ein:
+1. Melde dich als Administrator im Jellyfin-Web-Dashboard an und öffne **Dashboard → Plugins → Repositories** (in manchen Dashboard-Versionen über das Repository-/Zahnrad-Symbol auf der Plugins-Seite).
+2. Wähle **+ / Add repository** und trage ein:
 
    - **Repository name:** `Force Password Change`
-   - **Repository URL:** `https://raw.githubusercontent.com/losbaerchenos/jellyfin-plugin-force-password-change/main/manifest.json`
+   - **Repository URL:** [`https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/releases/latest/download/manifest.json`](https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/releases/latest/download/manifest.json)
 
-   Speichere den Eintrag.
-6. Öffne **Dashboard → Plugins → Catalog**, aktualisiere bei Bedarf den Katalog und suche nach **Force Password Change**.
-7. Wähle Version `1.0.0.0`, installiere das Plugin und starte Jellyfin neu, wenn Jellyfin dazu auffordert.
-8. Kontrolliere unter **Dashboard → Plugins → My Plugins**, dass die Version installiert und unterstützt ist.
+3. Speichere den Eintrag und öffne **Dashboard → Plugins → Catalog**. Aktualisiere den Katalog bei Bedarf, suche **Force Password Change** und installiere die angebotene Version.
+4. Starte Jellyfin neu, falls dazu aufgefordert, und prüfe die Installation unter **Dashboard → Plugins → My Plugins**.
 
-Für eine spätere Version muss ein neues Release-Paket hochgeladen und der Versions-Eintrag in `manifest.json` mit neuer Versionsnummer, ABI, Änderungsprotokoll, Zeitstempel und direkter ZIP-Download-URL ergänzt werden. Die Repository-URL selbst bleibt gleich; Jellyfin kann den Katalog anschließend aktualisieren.
+Das Manifest und das Plugin-ZIP werden automatisch für jedes Release erzeugt. Die Repository-URL bleibt bei Updates gleich; nach Veröffentlichung eines neuen Releases den Plugin-Katalog in Jellyfin aktualisieren.
+
+#### Releases veröffentlichen
+
+Für eine Veröffentlichung zuerst Änderungen auf einer privaten Jellyfin-12.x-Instanz testen und anschließend das GitHub-Repository öffentlich machen. Ein Versions-Tag startet dann automatisch den Release-Workflow: Er validiert die Tag-Version, führt alle Tests aus, baut das Plugin mit dieser Version, erstellt das ZIP und erzeugt ein GitHub-Release samt generierter Notizen und Jellyfin-Manifest. Die Katalog-URL oben zeigt immer auf das Manifest des neuesten Releases.
+
+Ein Tag wird nach erfolgreichem Test und Merge auf `main` einmalig gepusht. Beispiel für die erste Version:
+
+```powershell
+git checkout main
+git pull
+git tag v1.0.0.0
+git push origin v1.0.0.0
+```
+
+Der Der Workflow fordert mit `contents: write` die nötigen Berechtigungen zum Erstellen des Releases an. GitHub Actions muss aktiviert sein; Organisationsrichtlinien dürfen Schreibzugriffe des Workflow-Tokens nicht verhindern. Schlägt der Build oder ein Test fehl, wird kein Release angelegt. Pro Versionsnummer kann nur ein Tag veröffentlicht werden; für das nächste Release eine höhere vierteilige Versionsnummer verwenden (zum Beispiel `v1.0.1.0`).
 
 #### Nach der Installation: Passwortwechsel einrichten
 
@@ -159,7 +152,7 @@ Die Tests überprüfen das dauerhafte Speichern und Löschen offener Anforderung
 dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
 ```
 
-GitHub Actions führt Tests und Build bei Pull Requests und Pushes auf `main` aus. Das veröffentlichte Artefakt ist ein Build-Artefakt des Workflows und noch keine öffentliche Plugin-Veröffentlichung. Vor einer öffentlichen Freigabe zusätzlich Installation, Dashboard-Konfiguration, Passwortänderung, widerrufene Sitzungen, Reverse-Proxy-Basis-Pfad und Wiederherstellung der JSON-Anforderungen auf der privaten Jellyfin-12.x-Instanz testen.
+GitHub Actions führt Tests und Build bei Pull Requests und Pushes auf `main` aus; diese Builds stellen ein Artefakt für private Tests bereit. Ein Versions-Tag wie `v1.0.0.0` startet den Release-Workflow, der das Plugin testet und baut und anschließend ein versioniertes ZIP sowie das generierte Manifest an ein GitHub-Release hängt. Vor der Veröffentlichung zusätzlich Installation, Dashboard-Konfiguration, Passwortänderung, widerrufene Sitzungen, Reverse-Proxy-Basis-Pfad und Wiederherstellung der JSON-Anforderungen auf der privaten Jellyfin-12.x-Instanz testen.
 
 ## English
 
@@ -168,7 +161,7 @@ GitHub Actions führt Tests und Build bei Pull Requests und Pushes auf `main` au
 - Intended exclusively for Jellyfin Server **12.x**.
 - Built against Jellyfin API **12.2.0**; the manifest target ABI is `12.0.0.0`.
 - Do not use with Jellyfin 10.x or 11.x.
-- This repository is intended for private testing. No GitHub release containing an installable plugin ZIP has been published yet, so installation from the Jellyfin catalog is not active yet.
+- The GitHub repository must be public for Jellyfin catalog installation. While it is private, only people with GitHub access can download the plugin.
 
 ### Features at a glance
 
@@ -185,61 +178,54 @@ The plugin supports local Jellyfin accounts managed by Jellyfin. It does not res
 
 ### Installation
 
-You can install the plugin manually or add its own Jellyfin plugin repository after a release has been published. Jellyfin 12.x is required. Back up the Jellyfin configuration before installing on your private server.
+Jellyfin Server **12.x** is required. Back up your Jellyfin configuration before installing on your server.
 
-#### Method 1: Manual installation (recommended for private testing)
+#### Method 1: Manual installation
 
-1. Open the [project's GitHub Actions page](https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/actions) and select the latest successful **Build and test** workflow run on the `main` branch.
-2. Download the `jellyfin-plugin-force-password-change` archive under **Artifacts** and extract it. It contains `Jellyfin.Plugin.ForcePasswordChange.dll` and its build files.
-3. Find the plugin directory for your Jellyfin installation:
+1. Download the latest plugin ZIP from the [GitHub Releases page](https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/releases/latest). To test a version that has not been released yet, download the `jellyfin-plugin-force-password-change` artifact from the latest successful [GitHub Actions build](https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/actions/workflows/build.yml?query=branch%3Amain).
+2. Stop Jellyfin. For a Linux package installation run `sudo systemctl stop jellyfin`; for Docker, stop the container.
+3. Open the plugin directory for your installation:
 
-   | Installation | Plugin directory |
-   |---|---|
-   | Windows service / installer | `C:\ProgramData\Jellyfin\Server\plugins` |
-   | Windows, direct user launch | `%LOCALAPPDATA%\jellyfin\plugins` |
-   | Debian/Ubuntu Linux | `/var/lib/jellyfin/plugins` |
-   | Docker/container | `/config/plugins` **inside the container**; on the host this is under the mounted `/config` volume |
+   - Windows service/installer: `C:\ProgramData\Jellyfin\Server\plugins`
+   - Windows, direct user launch: `%LOCALAPPDATA%\jellyfin\plugins`
+   - Debian/Ubuntu: `/var/lib/jellyfin/plugins`
+   - Docker: `/config/plugins` inside the container (the mounted `/config` volume on the host)
 
-   Linux package paths may vary by distribution. Use the `plugins` directory beneath Jellyfin's data directory.
-4. Stop the Jellyfin server so no plugin files are in use.
-5. Create a version directory named `Force Password Change_1.0.0.0`, for example `C:\ProgramData\Jellyfin\Server\plugins\Force Password Change_1.0.0.0` or `/var/lib/jellyfin/plugins/Force Password Change_1.0.0.0`.
-6. Copy the extracted archive files directly into that version directory. The plugin DLL must be directly inside it, not inside another nested directory. Preserve the archive's directory structure.
-7. On Linux and Docker, make sure the Jellyfin process can read the files.
-8. Start Jellyfin again. Open **Dashboard → Plugins → My Plugins** and verify **Force Password Change** is loaded and supported. If it is missing or unsupported, check the server version, directory structure, file permissions, and Jellyfin logs.
+   Linux paths may vary by distribution; use the `plugins` folder beneath Jellyfin's data directory.
+4. Create a version folder named `Force Password Change_1.0.0.0` and extract the ZIP contents directly into it. `Jellyfin.Plugin.ForcePasswordChange.dll` must be directly inside the version folder, not an additional nested directory. Adjust the folder version for a newer plugin release.
+5. Start Jellyfin again. **Dashboard → Plugins → My Plugins** should show **Force Password Change** as installed and supported.
 
-To build locally, you need the .NET 10 SDK and access to NuGet:
+The ZIP does not require a build or a separate installer. To update, stop Jellyfin, replace the plugin files with the new version, and restart the server. Do not delete `plugins/configurations`; it contains plugin settings and persisted password-change requirements.
 
-```powershell
-dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
-dotnet publish src/Jellyfin.Plugin.ForcePasswordChange/Jellyfin.Plugin.ForcePasswordChange.csproj --configuration Release --output output
-Compress-Archive -Path output\* -DestinationPath Jellyfin.Plugin.ForcePasswordChange_1.0.0.0.zip -Force
-```
+#### Method 2: Install from the plugin repository
 
-Install only if all tests pass. To update, stop Jellyfin, replace the files in the plugin version directory with the new version, and start Jellyfin again. **Do not** delete the plugin configuration: pending password-change requirements are stored separately in `plugins/configurations/Jellyfin.Plugin.ForcePasswordChange.pending-users.json`. Other plugin settings are also in the configuration directory.
+The GitHub repository must be public so Jellyfin can download the manifest and ZIP without GitHub authentication. While the repository is private, only people with GitHub access can install it manually.
 
-#### Method 2: Install from a custom plugin repository
-
-This method becomes available once a tested version has been published as a GitHub release. The Jellyfin server must be able to fetch the repository manifest and release archive without signing in to GitHub. Jellyfin cannot fetch files from a private GitHub repository using your GitHub credentials, so use Method 1 while the project is private.
-
-1. Make sure the GitHub repository and its release files are public and accessible without signing in. If you want to keep the repository private, use Method 1 because Jellyfin cannot fetch private GitHub files with your GitHub credentials.
-2. Create a GitHub release for version `1.0.0.0` with the tag `v1.0.0.0`. The release workflow tests and builds the plugin, then attaches `Jellyfin.Plugin.ForcePasswordChange_1.0.0.0.zip` to the release.
-3. Verify that the manifest is publicly available at:
-
-   `https://raw.githubusercontent.com/losbaerchenos/jellyfin-plugin-force-password-change/main/manifest.json`
-
-   The manifest points to the ZIP attached to the release. Both the manifest URL and release package must be reachable without authentication. Catalog installation will not work until the release has been published.
-4. Sign in to the Jellyfin web dashboard as an administrator and open **Dashboard → Plugins → Repositories**. Depending on the dashboard version, repository management may be available using the repository/gear icon on the Plugins page.
-5. Select **+ / Add repository** and enter:
+1. Sign in to the Jellyfin web dashboard as an administrator and open **Dashboard → Plugins → Repositories** (in some dashboard versions, use the repository/gear icon on the Plugins page).
+2. Select **+ / Add repository** and enter:
 
    - **Repository name:** `Force Password Change`
-   - **Repository URL:** `https://raw.githubusercontent.com/losbaerchenos/jellyfin-plugin-force-password-change/main/manifest.json`
+   - **Repository URL:** [`https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/releases/latest/download/manifest.json`](https://github.com/losbaerchenos/jellyfin-plugin-force-password-change/releases/latest/download/manifest.json)
 
-   Save the entry.
-6. Open **Dashboard → Plugins → Catalog**, refresh the catalog if needed, and search for **Force Password Change**.
-7. Select version `1.0.0.0`, install the plugin, and restart Jellyfin if prompted.
-8. Under **Dashboard → Plugins → My Plugins**, verify that the version is installed and supported.
+3. Save the entry and open **Dashboard → Plugins → Catalog**. Refresh the catalog if needed, search for **Force Password Change**, and install the offered version.
+4. Restart Jellyfin if prompted, then verify the installation under **Dashboard → Plugins → My Plugins**.
 
-For a later version, publish a new release package and add a version entry to `manifest.json` with the new version, ABI, changelog, timestamp, and direct ZIP download URL. The repository URL remains unchanged; Jellyfin can refresh the catalog afterward.
+The release workflow automatically generates the manifest and plugin ZIP for each release. The repository URL stays the same; refresh the plugin catalog in Jellyfin after a new release is published.
+
+#### Publishing a release
+
+First test the changes on a private Jellyfin 12.x instance, then make the GitHub repository public. Pushing a version tag automatically starts the release workflow: it validates the tag, runs all tests, builds the plugin with that version, packages the ZIP, and creates a GitHub release with generated notes and the Jellyfin manifest. The catalog URL above always resolves to the manifest for the latest release.
+
+After the changes have passed testing and have been merged into `main`, push a version tag once. Example for the first release:
+
+```powershell
+git checkout main
+git pull
+git tag v1.0.0.0
+git push origin v1.0.0.0
+```
+
+The workflow requests the `contents: write` permission needed to create the release. GitHub Actions must be enabled, and organization policies must not block write access for the workflow token. If a build or test fails, no release is created. Each version tag can only be released once; use a higher four-part version for the next release (for example, `v1.0.1.0`).
 
 #### After installation: set up a password change
 
@@ -318,4 +304,4 @@ Tests cover persistence and clearing of pending requirements, default configurat
 dotnet test tests/Jellyfin.Plugin.ForcePasswordChange.Tests/Jellyfin.Plugin.ForcePasswordChange.Tests.csproj --configuration Release
 ```
 
-GitHub Actions runs tests and builds for pull requests and pushes to `main`. Its published output is a workflow build artifact, not a public plugin release. Before a public release, also test installation, dashboard configuration, password changes, token revocation, reverse-proxy base paths, and restoring the JSON requirements on the private Jellyfin 12.x instance.
+GitHub Actions runs tests and builds for pull requests and pushes to `main`; these builds provide an artifact for private testing. A version tag such as `v1.0.0.0` starts the release workflow, which tests and builds the plugin, then attaches a versioned ZIP and generated manifest to a GitHub release. Before publishing, also test installation, dashboard configuration, password changes, token revocation, reverse-proxy base paths, and restoring the JSON requirements on the private Jellyfin 12.x instance.
